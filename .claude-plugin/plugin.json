@@ -1,0 +1,48 @@
+{
+  "name": "swagger-api-tester",
+  "displayName": "Swagger API Tester",
+  "version": "0.1.0",
+  "description": "Deterministically test a local REST API from its OpenAPI/Swagger spec, right inside Claude Desktop. Ask Claude to \"test POST /api/users\" or \"test all endpoints\" — the engine generates valid requests, sends them, and validates responses against the documented contract.",
+  "author": {
+    "name": "Swagger API Tester Contributors"
+  },
+  "homepage": "https://github.com/example/swagger-api-tester",
+  "repository": "https://github.com/example/swagger-api-tester",
+  "license": "MIT",
+  "keywords": [
+    "openapi",
+    "swagger",
+    "api-testing",
+    "contract-testing",
+    "rest",
+    "spring-boot",
+    "springdoc",
+    "mcp"
+  ],
+  "userConfig": {
+    "base_url": {
+      "type": "string",
+      "title": "API base URL",
+      "description": "The running API to test, e.g. http://localhost:8080. Set this to skip all config — no project files needed. Leave blank to auto-detect from the project (Spring Boot / Quarkus / Micronaut).",
+      "required": false
+    },
+    "open_api_url": {
+      "type": "string",
+      "title": "OpenAPI URL (optional)",
+      "description": "Only needed if the spec is not at a standard path. Usually auto-discovered.",
+      "required": false
+    },
+    "project_path": {
+      "type": "directory",
+      "title": "Backend project path",
+      "description": "Path to the backend project (for config.json, testValues, auth, or code auto-detection). Leave blank to auto-detect from the current working directory.",
+      "required": false
+    },
+    "allow_remote": {
+      "type": "boolean",
+      "title": "Allow non-loopback targets",
+      "description": "Permit testing hosts that are not localhost. This is only the ENV half of the safety gate — config.json must ALSO set allowRemoteTargets:true. prod/live/staging hosts are always refused.",
+      "default": false
+    }
+  }
+}

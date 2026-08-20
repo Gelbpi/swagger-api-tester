@@ -1,0 +1,36 @@
+target/
+allure-results/
+allure-report/
+.allure/
+*.log
+
+# IDE
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+
+# OS
+.DS_Store
+
+# local secrets / overrides
+src/test/resources/config.local.properties
+.env
+
+# Node / TypeScript plugin
+node_modules/
+dist/*
+# The shipped, self-contained plugin bundle MUST be committed so a git-based
+# install works without a build step on the user's machine.
+!dist/mcp-server.js
+!dist/mcp-server.js.map
+*.tsbuildinfo
+coverage/
+
+# local plugin config (secrets/overrides)
+.api-tester/config.local.json
+
+# Fixture build output / package output
+test/fixtures/springboot/target/
+build/

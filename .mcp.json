@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "swagger-api-tester": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/dist/mcp-server.js"],
+      "env": {
+        "API_TESTER_BASE_URL": "${user_config.base_url}",
+        "API_TESTER_OPENAPI_URL": "${user_config.open_api_url}",
+        "API_TESTER_PROJECT": "${user_config.project_path}",
+        "API_TESTER_ALLOW_REMOTE": "${user_config.allow_remote}",
+        "CLAUDE_PLUGIN_DATA": "${CLAUDE_PLUGIN_DATA}"
+      }
+    }
+  }
+}
