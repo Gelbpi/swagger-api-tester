@@ -22,7 +22,6 @@ run('tar', [
   '.claude-plugin/plugin.json',
   '.mcp.json',
   'dist/mcp-server.js',
-  'dist/mcp-server.js.map',
   'README.md',
   'INSTALL.md',
   'API_TESTER.example.md',

@@ -22,9 +22,9 @@ src/test/resources/config.local.properties
 node_modules/
 dist/*
 # The shipped, self-contained plugin bundle MUST be committed so a git-based
-# install works without a build step on the user's machine.
+# install works without a build step on the user's machine. The source map is
+# NOT shipped (5+ MB, useless at runtime).
 !dist/mcp-server.js
-!dist/mcp-server.js.map
 *.tsbuildinfo
 coverage/
 

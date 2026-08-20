@@ -83082,12 +83082,15 @@ var settingsSchema = external_exports.object({
   testValues: testValuesSchema.optional(),
   requestOverrides: external_exports.record(requestOverrideSchema).optional(),
   expectations: external_exports.record(external_exports.number().int().min(100).max(599)).optional(),
-  skip: external_exports.array(external_exports.string()).optional()
+  skip: external_exports.array(external_exports.string()).optional(),
+  /** Strict (default) fails an unexpected 2xx; false treats it as PASS (§#8). */
+  strictStatus: external_exports.boolean().optional(),
+  /** Varies deterministic data generation between runs (§#11 seed). */
+  seed: external_exports.union([external_exports.string(), external_exports.number()]).optional()
 }).strict();
-var RESERVED_KEYS = ["seed", "teardown", "smartValues"];
+var RESERVED_KEYS = ["teardown", "smartValues"];
 var configSchema = settingsSchema.extend({
   profiles: external_exports.record(settingsSchema.partial()).optional(),
-  seed: external_exports.unknown().optional(),
   teardown: external_exports.unknown().optional(),
   smartValues: external_exports.unknown().optional()
 }).strict();
@@ -83261,7 +83264,7 @@ async function loadConfigOptional(projectDir) {
   return { ...loaded, present: true };
 }
 function applyProfile(config2, profileName) {
-  const { profiles, seed: _seed, teardown: _teardown, smartValues: _sv, ...base } = config2;
+  const { profiles, teardown: _teardown, smartValues: _sv, ...base } = config2;
   if (!profileName) return base;
   const override = profiles?.[profileName];
   if (!override) {
@@ -85072,7 +85075,7 @@ function buildBody(input, validator) {
   }
   const schema = content[contentType].schema;
   const value = generateValue(schema, {
-    seed: `${seedFor(endpoint)}#body`,
+    seed: `${input.seed ?? ""}${seedFor(endpoint)}#body`,
     ...input.testValues ? {
       testValues: {
         ...input.testValues.body ? { byName: input.testValues.body } : {},
@@ -85371,6 +85374,14 @@ function classifyResponse(input) {
   }
   const statusOk = actualStatus === expectedStatus || isSuccess(actualStatus) && (documentedResponseKey !== void 0 || input.onlyDefault);
   if (!statusOk) {
+    if (isSuccess(actualStatus) && !input.strictStatus) {
+      return {
+        outcome: "PASS",
+        reason: null,
+        explanation: `succeeded with ${actualStatus} (expected ${expectedStatus}); accepted under lenient status mode`,
+        validationErrors: none
+      };
+    }
     return {
       outcome: "FAIL",
       reason: "STATUS_MISMATCH",
@@ -85635,7 +85646,8 @@ async function executeOne(input) {
     ...ctx.settings.requestOverrides?.[key] ? { requestOverride: ctx.settings.requestOverrides[key] } : {},
     ...effectiveExplicit ? { explicit: effectiveExplicit } : {},
     validator: ctx.validator,
-    pool: ctx.valuePool
+    pool: ctx.valuePool,
+    ...ctx.settings.seed !== void 0 ? { seed: ctx.settings.seed } : {}
   });
   if (!build.ok) return skip(build.reason, build.explanation);
   const request = build.request;
@@ -85738,6 +85750,7 @@ async function executeOne(input) {
       schemaValid: evaluation.schemaValid,
       hasCredentials,
       endpointRequiresAuth: endpointRequiresAuth(ctx, endpoint),
+      strictStatus: ctx.settings.strictStatus ?? true,
       validationErrors: evaluation.validationErrors
     });
     const includeBody = classification.outcome !== "PASS" || input.includeResponseBody === true;
@@ -86515,6 +86528,14 @@ function createServer(opts = {}) {
 }
 
 // src/mcp/bin.ts
+function silenceUrlParseDeprecation() {
+  const original = process.emitWarning.bind(process);
+  process.emitWarning = (warning, ...args) => {
+    const code = typeof args[0] === "object" && args[0] ? args[0].code : args[1];
+    if (code === "DEP0169" || /url\.parse/i.test(String(warning))) return;
+    return original(warning, ...args);
+  };
+}
 function bridgeEnv(env) {
   const projectPath = env.CLAUDE_PLUGIN_OPTION_PROJECT_PATH ?? env.API_TESTER_PROJECT_PATH;
   if (projectPath && !env.API_TESTER_PROJECT) env.API_TESTER_PROJECT = projectPath;
@@ -86526,6 +86547,7 @@ function bridgeEnv(env) {
   if (allowRemote && /^(1|true|yes|on)$/i.test(allowRemote)) env.API_TESTER_ALLOW_REMOTE = "1";
 }
 async function main() {
+  silenceUrlParseDeprecation();
   bridgeEnv(process.env);
   const server = createServer();
   const transport = new StdioServerTransport();

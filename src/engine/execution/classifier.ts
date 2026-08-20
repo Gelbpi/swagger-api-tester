@@ -30,6 +30,12 @@ export interface ClassifyInput {
   hasCredentials: boolean;
   /** Whether the endpoint declares a (non-empty) security requirement. */
   endpointRequiresAuth: boolean;
+  /**
+   * When false, an unexpected-but-successful 2xx that isn't documented (e.g. 201
+   * where the spec says 200) is a PASS rather than a FAIL — removes 200/201 noise.
+   * Defaults to strict (true).
+   */
+  strictStatus: boolean;
   validationErrors: ValidationErrorDetail[];
 }
 
@@ -122,6 +128,16 @@ export function classifyResponse(input: ClassifyInput): Classification {
     (isSuccess(actualStatus) && (documentedResponseKey !== undefined || input.onlyDefault));
 
   if (!statusOk) {
+    // Lenient mode: a successful but undocumented/unexpected 2xx is close enough
+    // (the call worked) — report PASS with a note instead of failing.
+    if (isSuccess(actualStatus) && !input.strictStatus) {
+      return {
+        outcome: 'PASS',
+        reason: null,
+        explanation: `succeeded with ${actualStatus} (expected ${expectedStatus}); accepted under lenient status mode`,
+        validationErrors: none,
+      };
+    }
     return {
       outcome: 'FAIL',
       reason: 'STATUS_MISMATCH',

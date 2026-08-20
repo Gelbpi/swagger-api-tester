@@ -209,6 +209,7 @@ export async function executeOne(input: ExecuteOneInput): Promise<TestRecord> {
     ...(effectiveExplicit ? { explicit: effectiveExplicit } : {}),
     validator: ctx.validator,
     pool: ctx.valuePool,
+    ...(ctx.settings.seed !== undefined ? { seed: ctx.settings.seed } : {}),
   });
   if (!build.ok) return skip(build.reason, build.explanation);
   const request = build.request;
@@ -340,6 +341,7 @@ export async function executeOne(input: ExecuteOneInput): Promise<TestRecord> {
           schemaValid: evaluation.schemaValid,
           hasCredentials,
           endpointRequiresAuth: endpointRequiresAuth(ctx, endpoint),
+          strictStatus: ctx.settings.strictStatus ?? true,
           validationErrors: evaluation.validationErrors,
         });
 

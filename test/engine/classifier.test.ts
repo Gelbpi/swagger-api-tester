@@ -12,6 +12,7 @@ const base: ClassifyInput = {
   schemaValid: true,
   hasCredentials: false,
   endpointRequiresAuth: false,
+  strictStatus: true,
   validationErrors: [],
 };
 
@@ -94,5 +95,17 @@ describe('classifyResponse (build-prompt §33)', () => {
     expect(
       cls({ expectedStatus: 201, actualStatus: 200, documentedResponseKey: '200' }),
     ).toMatchObject({ outcome: 'PASS' });
+  });
+
+  it('lenient status mode: undocumented unexpected 2xx is PASS, not FAIL (§#8)', () => {
+    const input = {
+      expectedStatus: 200,
+      actualStatus: 201,
+      documentedResponseKey: undefined,
+      contentDocumented: false,
+      schemaChecked: false,
+    };
+    expect(cls({ ...input, strictStatus: true })).toMatchObject({ outcome: 'FAIL', reason: 'STATUS_MISMATCH' });
+    expect(cls({ ...input, strictStatus: false })).toMatchObject({ outcome: 'PASS' });
   });
 });

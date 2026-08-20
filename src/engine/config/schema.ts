@@ -98,17 +98,20 @@ export const settingsSchema = z
     requestOverrides: z.record(requestOverrideSchema).optional(),
     expectations: z.record(z.number().int().min(100).max(599)).optional(),
     skip: z.array(z.string()).optional(),
+    /** Strict (default) fails an unexpected 2xx; false treats it as PASS (§#8). */
+    strictStatus: z.boolean().optional(),
+    /** Varies deterministic data generation between runs (§#11 seed). */
+    seed: z.union([z.string(), z.number()]).optional(),
   })
   .strict();
 export type Settings = z.infer<typeof settingsSchema>;
 
 /** Reserved (accepted, not executed in V1). */
-export const RESERVED_KEYS = ['seed', 'teardown', 'smartValues'] as const;
+export const RESERVED_KEYS = ['teardown', 'smartValues'] as const;
 
 export const configSchema = settingsSchema
   .extend({
     profiles: z.record(settingsSchema.partial()).optional(),
-    seed: z.unknown().optional(),
     teardown: z.unknown().optional(),
     smartValues: z.unknown().optional(),
   })

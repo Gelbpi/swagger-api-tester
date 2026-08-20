@@ -131,6 +131,23 @@ describe('RequestBuilder (build-prompt §22–24, §21)', () => {
     }
   });
 
+  it('seed varies generated data deterministically (§#11)', () => {
+    const ep = makeEndpoint({
+      method: 'POST',
+      path: '/codes',
+      requestBody: {
+        content: { 'application/json': { schema: { type: 'object', required: ['code'], properties: { code: { type: 'string', pattern: '^[a-z]{8}$' } } } } },
+      } as OpenAPIV3.RequestBodyObject,
+    });
+    const codeFor = (seed: string | number) => {
+      const r = buildRequest({ endpoint: ep, baseUrl: BASE, seed });
+      return r.ok ? (r.request.body as { code: string }).code : '';
+    };
+    expect(codeFor('A')).toBe(codeFor('A')); // deterministic per seed
+    expect(codeFor('A')).not.toBe(codeFor('B')); // different seed -> different data
+    expect(codeFor('A')).toMatch(/^[a-z]{8}$/);
+  });
+
   it('config.requestOverride body is used and can be overridden by explicit body', () => {
     const ep = makeEndpoint({
       method: 'POST',

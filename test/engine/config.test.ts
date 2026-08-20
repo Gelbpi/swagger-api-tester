@@ -82,10 +82,18 @@ describe('loadConfig (build-prompt §13)', () => {
     });
   });
 
-  it('warns on reserved keys', async () => {
-    const dir = project('reserved', `{ "baseUrl": "http://localhost:8080", "seed": {} }`);
+  it('warns on reserved keys (teardown/smartValues)', async () => {
+    const dir = project('reserved', `{ "baseUrl": "http://localhost:8080", "teardown": {} }`);
     const { warnings } = await loadConfig(dir);
-    expect(warnings.some((w) => w.includes('seed'))).toBe(true);
+    expect(warnings.some((w) => w.includes('teardown'))).toBe(true);
+  });
+
+  it('accepts seed and strictStatus as real settings (§#8/#11)', async () => {
+    const dir = project('seed', `{ "baseUrl": "http://localhost:8080", "seed": 42, "strictStatus": false }`);
+    const { config, warnings } = await loadConfig(dir);
+    expect(config.seed).toBe(42);
+    expect(config.strictStatus).toBe(false);
+    expect(warnings).toEqual([]); // seed is no longer a reserved-key warning
   });
 
   it('errors when config.json is missing', async () => {

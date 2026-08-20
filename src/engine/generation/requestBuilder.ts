@@ -36,6 +36,8 @@ export interface BuildRequestInput {
   validator?: SchemaValidator;
   /** Harvested-value pool consulted for path/query params (§35/§36). */
   pool?: ValuePool;
+  /** Optional seed that varies deterministic generation between runs (§#11). */
+  seed?: string | number;
 }
 
 /** Supported request content types, in selection-priority order (§24). */
@@ -135,7 +137,7 @@ function buildBody(input: BuildRequestInput, validator: SchemaValidator): BodyOu
 
   const schema = content[contentType]!.schema;
   const value = generateValue(schema, {
-    seed: `${seedFor(endpoint)}#body`,
+    seed: `${input.seed ?? ''}${seedFor(endpoint)}#body`,
     ...(input.testValues
       ? {
           testValues: {
