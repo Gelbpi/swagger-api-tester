@@ -15,6 +15,7 @@ import type { ValidationErrorDetail } from '../types/result.js';
 import { prepareContext } from './context.js';
 import { buildPlan, type PlanFilters } from './planBuilder.js';
 import { executeOne, type RiskGate } from './executeOne.js';
+import { buildNegativeCases, type NegativeCase } from './negativeCases.js';
 import { runPool } from './testRunner.js';
 import { RunStore } from '../results/runStore.js';
 import { makeRunId } from '../results/ids.js';
@@ -34,6 +35,8 @@ export interface TestAllInput extends PlanFilters {
   refreshSpec?: boolean;
   dryRun?: boolean;
   maxFailuresReturned?: number;
+  /** Also test documented error responses (400/404/...) with deliberate bad input (#7). */
+  negativeTests?: boolean;
   // Injection / environment
   pluginProjectPath?: string;
   env?: NodeJS.ProcessEnv;
@@ -179,6 +182,16 @@ export async function testAll(input: TestAllInput): Promise<TestAllResult> {
   };
   const plan = buildPlan(ctx.registry, filters);
 
+  // Expand into work items: the happy path per endpoint, plus (when enabled) one
+  // per documented-error negative case (#7).
+  const work: Array<{ endpoint: (typeof plan)[number]; negativeCase?: NegativeCase }> = [];
+  for (const endpoint of plan) {
+    work.push({ endpoint });
+    if (input.negativeTests) {
+      for (const negativeCase of buildNegativeCases(endpoint)) work.push({ endpoint, negativeCase });
+    }
+  }
+
   let currentLimit =
     input.maxParallelRequests ?? ctx.settings.maxParallelRequests ?? DEFAULT_CONCURRENCY;
   const onRateLimit = (): void => {
@@ -187,15 +200,16 @@ export async function testAll(input: TestAllInput): Promise<TestAllResult> {
 
   const started = now();
   const results = await runPool<TestRecord>(
-    plan.length,
+    work.length,
     (i) =>
       executeOne({
         ctx,
-        endpoint: plan[i]!,
+        endpoint: work[i]!.endpoint,
         runId,
         index: i + 1,
         gate,
         onRateLimit,
+        ...(work[i]!.negativeCase ? { negativeCase: work[i]!.negativeCase } : {}),
         ...(input.authProfile ? { authProfile: input.authProfile } : {}),
         ...(input.dryRun ? { dryRun: input.dryRun } : {}),
         ...(input.httpFetchImpl ? { httpFetchImpl: input.httpFetchImpl } : {}),
@@ -205,7 +219,7 @@ export async function testAll(input: TestAllInput): Promise<TestAllResult> {
   );
 
   const records: TestRecord[] = results.map((r, i) =>
-    r ?? cancelledRecord(plan[i]!.method, plan[i]!.path, runId, i + 1),
+    r ?? cancelledRecord(work[i]!.endpoint.method, work[i]!.endpoint.path, runId, i + 1),
   );
 
   const totals = emptyTotals();

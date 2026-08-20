@@ -20,6 +20,7 @@ import { assertTargetAllowed } from '../http/targetGuard.js';
 import { resolveExpectedStatus } from '../validation/statusResolver.js';
 import { evaluateResponse } from '../validation/responseValidator.js';
 import { classifyResponse } from './classifier.js';
+import { classifyNegative, type NegativeCase } from './negativeCases.js';
 import { sendRequest, HttpClientError } from '../http/httpClient.js';
 import { rateLimitPolicy } from '../http/retryPolicy.js';
 import { EngineError } from '../types/errors.js';
@@ -57,6 +58,8 @@ export interface ExecuteOneInput {
   index: number;
   gate: RiskGate;
   explicit?: ExplicitOverrides;
+  /** When set, run a documented-error negative case instead of the happy path (#7). */
+  negativeCase?: NegativeCase;
   authProfile?: string;
   expectStatus?: number;
   dryRun?: boolean;
@@ -175,13 +178,27 @@ export async function executeOne(input: ExecuteOneInput): Promise<TestRecord> {
   }
   if (profileName) record.authProfile = profileName;
 
-  // expected status
-  const expected = resolveExpectedStatus(endpoint, {
-    ...(input.expectStatus !== undefined ? { expectStatus: input.expectStatus } : {}),
-    ...(ctx.settings.expectations ? { expectations: ctx.settings.expectations } : {}),
-  });
+  const neg = input.negativeCase;
+
+  // expected status (a negative case expects its documented error code)
+  const expected = neg
+    ? { status: neg.targetStatus, logic: `negative test (${neg.strategy}): ${neg.description}`, onlyDefault: false }
+    : resolveExpectedStatus(endpoint, {
+        ...(input.expectStatus !== undefined ? { expectStatus: input.expectStatus } : {}),
+        ...(ctx.settings.expectations ? { expectations: ctx.settings.expectations } : {}),
+      });
   record.expectedStatus = expected.status;
   record.expectationLogic = expected.logic;
+
+  // For a negative case, merge its bad inputs as explicit overrides (explicit
+  // body bypasses self-validation, which is what we want here).
+  const effectiveExplicit: ExplicitOverrides | undefined = neg
+    ? {
+        ...input.explicit,
+        ...(neg.pathParams ? { pathParams: { ...input.explicit?.pathParams, ...neg.pathParams } } : {}),
+        ...(neg.body !== undefined ? { body: neg.body } : {}),
+      }
+    : input.explicit;
 
   // build request (+ self-validation §21)
   const build = buildRequest({
@@ -189,7 +206,7 @@ export async function executeOne(input: ExecuteOneInput): Promise<TestRecord> {
     baseUrl: ctx.baseUrl,
     ...(ctx.settings.testValues ? { testValues: ctx.settings.testValues } : {}),
     ...(ctx.settings.requestOverrides?.[key] ? { requestOverride: ctx.settings.requestOverrides[key] } : {}),
-    ...(input.explicit ? { explicit: input.explicit } : {}),
+    ...(effectiveExplicit ? { explicit: effectiveExplicit } : {}),
     validator: ctx.validator,
     pool: ctx.valuePool,
   });
@@ -303,19 +320,28 @@ export async function executeOne(input: ExecuteOneInput): Promise<TestRecord> {
     const evaluation = evaluateResponse(endpoint, res.status, contentType, res.bodyText, {
       validator: ctx.validator,
     });
-    const classification = classifyResponse({
-      expectedStatus: expected.status,
-      actualStatus: res.status,
-      onlyDefault: expected.onlyDefault,
-      ...(evaluation.documentedResponseKey !== undefined ? { documentedResponseKey: evaluation.documentedResponseKey } : {}),
-      contentDocumented: evaluation.contentDocumented,
-      contentTypeOk: evaluation.contentTypeOk,
-      schemaChecked: evaluation.schemaChecked,
-      schemaValid: evaluation.schemaValid,
-      hasCredentials,
-      endpointRequiresAuth: endpointRequiresAuth(ctx, endpoint),
-      validationErrors: evaluation.validationErrors,
-    });
+    const classification = neg
+      ? classifyNegative({
+          targetStatus: neg.targetStatus,
+          actualStatus: res.status,
+          ...(evaluation.documentedResponseKey !== undefined ? { documentedResponseKey: evaluation.documentedResponseKey } : {}),
+          schemaChecked: evaluation.schemaChecked,
+          schemaValid: evaluation.schemaValid,
+          validationErrors: evaluation.validationErrors,
+        })
+      : classifyResponse({
+          expectedStatus: expected.status,
+          actualStatus: res.status,
+          onlyDefault: expected.onlyDefault,
+          ...(evaluation.documentedResponseKey !== undefined ? { documentedResponseKey: evaluation.documentedResponseKey } : {}),
+          contentDocumented: evaluation.contentDocumented,
+          contentTypeOk: evaluation.contentTypeOk,
+          schemaChecked: evaluation.schemaChecked,
+          schemaValid: evaluation.schemaValid,
+          hasCredentials,
+          endpointRequiresAuth: endpointRequiresAuth(ctx, endpoint),
+          validationErrors: evaluation.validationErrors,
+        });
 
     const includeBody = classification.outcome !== 'PASS' || input.includeResponseBody === true;
     const response: SanitizedResponse = {

@@ -16,6 +16,10 @@ const inputSchema = {
   authProfile: z.string().optional(),
   profile: z.string().optional(),
   mutations: z.boolean().optional().describe('Enable state-changing methods (default off)'),
+  negativeTests: z
+    .boolean()
+    .optional()
+    .describe('Also test documented error responses (e.g. 404/400) by sending deliberately bad input'),
   maxParallelRequests: z.number().int().positive().optional(),
   refreshSpec: z.boolean().optional(),
   dryRun: z.boolean().optional(),
@@ -44,6 +48,7 @@ export function registerTestAll(server: McpServer, opts: ServerOptions): void {
         ...(args.authProfile ? { authProfile: args.authProfile } : {}),
         ...(args.profile ? { profile: args.profile } : {}),
         ...(args.mutations !== undefined ? { mutations: args.mutations } : {}),
+        ...(args.negativeTests !== undefined ? { negativeTests: args.negativeTests } : {}),
         ...(args.maxParallelRequests ? { maxParallelRequests: args.maxParallelRequests } : {}),
         ...(args.refreshSpec ? { refreshSpec: args.refreshSpec } : {}),
         ...(args.dryRun ? { dryRun: args.dryRun } : {}),

@@ -85397,6 +85397,99 @@ function classifyResponse(input) {
   return { outcome: "PASS", reason: null, explanation: "response matched the contract", validationErrors: none };
 }
 
+// src/engine/execution/negativeCases.ts
+var NOT_FOUND_STATUSES = [404, 410];
+var BAD_REQUEST_STATUSES = [400, 422];
+function responseDocuments(responses, status) {
+  const range = `${Math.floor(status / 100)}`;
+  return responses[String(status)] !== void 0 || responses[`${range}XX`] !== void 0 || responses[`${range}xx`] !== void 0;
+}
+function notFoundValue(param) {
+  const schema = param.schema ?? {};
+  const type = Array.isArray(schema.type) ? schema.type.find((t) => t !== "null") : schema.type;
+  if (type === "integer" || type === "number") return 2147483647;
+  if (type === "boolean") return false;
+  if (schema.format === "uuid") return FIXED_UUID;
+  return "does-not-exist";
+}
+function requiredJsonBody(endpoint) {
+  const media = endpoint.requestBody?.content?.["application/json"];
+  const schema = media?.schema;
+  return !!schema && Array.isArray(schema.required) && schema.required.length > 0;
+}
+function buildNegativeCases(endpoint) {
+  const responses = endpoint.responses ?? {};
+  const pathParams = endpoint.parameters.filter((p) => p.in === "path");
+  const cases = [];
+  if (pathParams.length > 0) {
+    for (const status of NOT_FOUND_STATUSES) {
+      if (!responseDocuments(responses, status)) continue;
+      const values = {};
+      for (const p of pathParams) values[p.name] = notFoundValue(p);
+      cases.push({
+        targetStatus: status,
+        strategy: "not-found",
+        description: `expect ${status} for a non-existent resource`,
+        pathParams: values
+      });
+      break;
+    }
+  }
+  if (requiredJsonBody(endpoint)) {
+    for (const status of BAD_REQUEST_STATUSES) {
+      if (!responseDocuments(responses, status)) continue;
+      cases.push({
+        targetStatus: status,
+        strategy: "missing-required",
+        description: `expect ${status} for a body missing required fields`,
+        body: {}
+      });
+      break;
+    }
+  }
+  return cases;
+}
+function classifyNegative(input) {
+  const { targetStatus, actualStatus, documentedResponseKey, schemaChecked, schemaValid } = input;
+  const none = [];
+  if (actualStatus >= 500) {
+    return { outcome: "FAIL", reason: "SERVER_ERROR", explanation: `[negative] server returned ${actualStatus}`, validationErrors: none };
+  }
+  if (actualStatus === targetStatus) {
+    if (schemaChecked && !schemaValid) {
+      return {
+        outcome: "FAIL",
+        reason: "SCHEMA_VALIDATION_FAILED",
+        explanation: `[negative] got expected ${actualStatus} but the error body failed its schema`,
+        validationErrors: input.validationErrors
+      };
+    }
+    return { outcome: "PASS", reason: null, explanation: `[negative] correctly returned documented ${actualStatus}`, validationErrors: none };
+  }
+  if (actualStatus >= 200 && actualStatus < 400) {
+    return {
+      outcome: "FAIL",
+      reason: "STATUS_MISMATCH",
+      explanation: `[negative] expected ${targetStatus}, got success ${actualStatus} \u2014 the error path is not enforced`,
+      validationErrors: none
+    };
+  }
+  if (documentedResponseKey !== void 0) {
+    return {
+      outcome: "INCONCLUSIVE",
+      reason: "BUSINESS_RULE_REJECTED",
+      explanation: `[negative] expected ${targetStatus}, got a different documented error ${actualStatus}`,
+      validationErrors: none
+    };
+  }
+  return {
+    outcome: "FAIL",
+    reason: "UNDOCUMENTED_ERROR_SHAPE",
+    explanation: `[negative] expected ${targetStatus}, got undocumented ${actualStatus}`,
+    validationErrors: none
+  };
+}
+
 // src/engine/http/retryPolicy.ts
 var DEFAULT_MAX_BACKOFF_MS = 3e4;
 var DEFAULT_429_DELAY_MS = 1e3;
@@ -85523,18 +85616,24 @@ async function executeOne(input) {
     throw err;
   }
   if (profileName) record2.authProfile = profileName;
-  const expected = resolveExpectedStatus(endpoint, {
+  const neg = input.negativeCase;
+  const expected = neg ? { status: neg.targetStatus, logic: `negative test (${neg.strategy}): ${neg.description}`, onlyDefault: false } : resolveExpectedStatus(endpoint, {
     ...input.expectStatus !== void 0 ? { expectStatus: input.expectStatus } : {},
     ...ctx.settings.expectations ? { expectations: ctx.settings.expectations } : {}
   });
   record2.expectedStatus = expected.status;
   record2.expectationLogic = expected.logic;
+  const effectiveExplicit = neg ? {
+    ...input.explicit,
+    ...neg.pathParams ? { pathParams: { ...input.explicit?.pathParams, ...neg.pathParams } } : {},
+    ...neg.body !== void 0 ? { body: neg.body } : {}
+  } : input.explicit;
   const build = buildRequest({
     endpoint,
     baseUrl: ctx.baseUrl,
     ...ctx.settings.testValues ? { testValues: ctx.settings.testValues } : {},
     ...ctx.settings.requestOverrides?.[key] ? { requestOverride: ctx.settings.requestOverrides[key] } : {},
-    ...input.explicit ? { explicit: input.explicit } : {},
+    ...effectiveExplicit ? { explicit: effectiveExplicit } : {},
     validator: ctx.validator,
     pool: ctx.valuePool
   });
@@ -85621,7 +85720,14 @@ async function executeOne(input) {
     const evaluation = evaluateResponse(endpoint, res.status, contentType, res.bodyText, {
       validator: ctx.validator
     });
-    const classification = classifyResponse({
+    const classification = neg ? classifyNegative({
+      targetStatus: neg.targetStatus,
+      actualStatus: res.status,
+      ...evaluation.documentedResponseKey !== void 0 ? { documentedResponseKey: evaluation.documentedResponseKey } : {},
+      schemaChecked: evaluation.schemaChecked,
+      schemaValid: evaluation.schemaValid,
+      validationErrors: evaluation.validationErrors
+    }) : classifyResponse({
       expectedStatus: expected.status,
       actualStatus: res.status,
       onlyDefault: expected.onlyDefault,
@@ -86229,20 +86335,28 @@ async function testAll(input) {
     order: "producers-first"
   };
   const plan = buildPlan(ctx.registry, filters);
+  const work = [];
+  for (const endpoint of plan) {
+    work.push({ endpoint });
+    if (input.negativeTests) {
+      for (const negativeCase of buildNegativeCases(endpoint)) work.push({ endpoint, negativeCase });
+    }
+  }
   let currentLimit = input.maxParallelRequests ?? ctx.settings.maxParallelRequests ?? DEFAULT_CONCURRENCY;
   const onRateLimit = () => {
     currentLimit = Math.max(1, Math.floor(currentLimit / 2));
   };
   const started = now();
   const results = await runPool(
-    plan.length,
+    work.length,
     (i) => executeOne({
       ctx,
-      endpoint: plan[i],
+      endpoint: work[i].endpoint,
       runId,
       index: i + 1,
       gate,
       onRateLimit,
+      ...work[i].negativeCase ? { negativeCase: work[i].negativeCase } : {},
       ...input.authProfile ? { authProfile: input.authProfile } : {},
       ...input.dryRun ? { dryRun: input.dryRun } : {},
       ...input.httpFetchImpl ? { httpFetchImpl: input.httpFetchImpl } : {},
@@ -86251,7 +86365,7 @@ async function testAll(input) {
     { getLimit: () => currentLimit, ...input.signal ? { signal: input.signal } : {} }
   );
   const records = results.map(
-    (r, i) => r ?? cancelledRecord(plan[i].method, plan[i].path, runId, i + 1)
+    (r, i) => r ?? cancelledRecord(work[i].endpoint.method, work[i].endpoint.path, runId, i + 1)
   );
   const totals = emptyTotals();
   for (const r of records) tallyOutcome(totals, r.outcome);
@@ -86303,6 +86417,7 @@ var inputSchema2 = {
   authProfile: external_exports.string().optional(),
   profile: external_exports.string().optional(),
   mutations: external_exports.boolean().optional().describe("Enable state-changing methods (default off)"),
+  negativeTests: external_exports.boolean().optional().describe("Also test documented error responses (e.g. 404/400) by sending deliberately bad input"),
   maxParallelRequests: external_exports.number().int().positive().optional(),
   refreshSpec: external_exports.boolean().optional(),
   dryRun: external_exports.boolean().optional(),
@@ -86326,6 +86441,7 @@ function registerTestAll(server, opts) {
         ...args.authProfile ? { authProfile: args.authProfile } : {},
         ...args.profile ? { profile: args.profile } : {},
         ...args.mutations !== void 0 ? { mutations: args.mutations } : {},
+        ...args.negativeTests !== void 0 ? { negativeTests: args.negativeTests } : {},
         ...args.maxParallelRequests ? { maxParallelRequests: args.maxParallelRequests } : {},
         ...args.refreshSpec ? { refreshSpec: args.refreshSpec } : {},
         ...args.dryRun ? { dryRun: args.dryRun } : {},
