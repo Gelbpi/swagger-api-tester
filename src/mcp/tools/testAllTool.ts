@@ -20,6 +20,10 @@ const inputSchema = {
     .boolean()
     .optional()
     .describe('Also test documented error responses (e.g. 404/400) by sending deliberately bad input'),
+  teardown: z
+    .boolean()
+    .optional()
+    .describe('After the run, delete resources the tester created (needs mutations) to keep the DB clean'),
   maxParallelRequests: z.number().int().positive().optional(),
   refreshSpec: z.boolean().optional(),
   dryRun: z.boolean().optional(),
@@ -49,6 +53,7 @@ export function registerTestAll(server: McpServer, opts: ServerOptions): void {
         ...(args.profile ? { profile: args.profile } : {}),
         ...(args.mutations !== undefined ? { mutations: args.mutations } : {}),
         ...(args.negativeTests !== undefined ? { negativeTests: args.negativeTests } : {}),
+        ...(args.teardown !== undefined ? { teardown: args.teardown } : {}),
         ...(args.maxParallelRequests ? { maxParallelRequests: args.maxParallelRequests } : {}),
         ...(args.refreshSpec ? { refreshSpec: args.refreshSpec } : {}),
         ...(args.dryRun ? { dryRun: args.dryRun } : {}),

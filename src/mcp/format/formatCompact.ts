@@ -84,6 +84,10 @@ export function formatRunSummary(s: TestAllSummary): string {
     lines.push('SKIPPED');
     for (const g of s.skipped) lines.push('', formatGroup(g));
   }
+  if (s.teardown) {
+    lines.push('');
+    lines.push(`Teardown: deleted ${s.teardown.deleted}/${s.teardown.attempted} created resource(s)` + (s.teardown.failed ? `, ${s.teardown.failed} failed` : ''));
+  }
   if (s.warnings.length) {
     lines.push('');
     lines.push('Notes:');

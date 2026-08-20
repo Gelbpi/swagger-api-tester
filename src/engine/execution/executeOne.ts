@@ -43,6 +43,25 @@ function endpointRequiresAuth(ctx: EngineContext, endpoint: Endpoint): boolean {
   );
 }
 
+/** Extract the id of a resource created by a POST, from the body or Location header. */
+function extractCreatedId(bodyText: string, headers: Record<string, string>): unknown {
+  try {
+    const body = JSON.parse(bodyText);
+    if (body && typeof body === 'object' && !Array.isArray(body)) {
+      const id = (body as Record<string, unknown>).id;
+      if (typeof id === 'string' || typeof id === 'number') return id;
+    }
+  } catch {
+    /* not JSON */
+  }
+  const location = headers['location'];
+  if (location) {
+    const seg = location.split('?')[0]!.split('/').filter(Boolean).pop();
+    if (seg) return /^\d+$/.test(seg) ? Number(seg) : seg;
+  }
+  return undefined;
+}
+
 /** Which risk classes may actually execute. */
 export interface RiskGate {
   allowMutating: boolean;
@@ -313,6 +332,14 @@ export async function executeOne(input: ExecuteOneInput): Promise<TestRecord> {
         ctx.valuePool.harvest(JSON.parse(res.bodyText), endpoint.path);
       } catch {
         /* non-JSON body — nothing to harvest */
+      }
+    }
+
+    // Track resources created by a POST so teardown can remove them (§#11).
+    if (endpoint.method === 'POST' && !neg && res.status >= 200 && res.status < 300) {
+      const createdId = extractCreatedId(res.bodyText, res.headers);
+      if (createdId !== undefined) {
+        ctx.createdResources.push({ collectionPath: endpoint.path, id: createdId });
       }
     }
 

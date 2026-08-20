@@ -224,7 +224,7 @@ export async function loadConfigOptional(
  * Throws CONFIG_INVALID if the requested profile does not exist.
  */
 export function applyProfile(config: ApiTesterConfig, profileName?: string): Settings {
-  const { profiles, teardown: _teardown, smartValues: _sv, ...base } = config;
+  const { profiles, smartValues: _sv, ...base } = config;
   if (!profileName) return base;
   const override = profiles?.[profileName];
   if (!override) {

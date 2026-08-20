@@ -102,17 +102,22 @@ export const settingsSchema = z
     strictStatus: z.boolean().optional(),
     /** Varies deterministic data generation between runs (§#11 seed). */
     seed: z.union([z.string(), z.number()]).optional(),
+    /**
+     * After a mutation run, delete resources the tester created (compensating
+     * DELETEs, reverse order) so the DB stays clean and runs are repeatable.
+     * Requires mutations enabled; only ever deletes ids we created (§#11 teardown).
+     */
+    teardown: z.boolean().optional(),
   })
   .strict();
 export type Settings = z.infer<typeof settingsSchema>;
 
 /** Reserved (accepted, not executed in V1). */
-export const RESERVED_KEYS = ['teardown', 'smartValues'] as const;
+export const RESERVED_KEYS = ['smartValues'] as const;
 
 export const configSchema = settingsSchema
   .extend({
     profiles: z.record(settingsSchema.partial()).optional(),
-    teardown: z.unknown().optional(),
     smartValues: z.unknown().optional(),
   })
   .strict();

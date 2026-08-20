@@ -38,4 +38,6 @@ export interface TestAllSummary {
   droppedFailureGroups: number;
   warnings: string[];
   detailsUri: string;
+  /** Compensating-DELETE summary when teardown ran (§#11). */
+  teardown?: { attempted: number; deleted: number; failed: number };
 }

@@ -45,6 +45,22 @@ export interface TestRecord {
   response?: SanitizedResponse;
 }
 
+/** A resource the tester created via a POST, tracked for teardown (§#11). */
+export interface CreatedResource {
+  /** The collection path the POST targeted, e.g. /users. */
+  collectionPath: string;
+  id: unknown;
+}
+
+/** Outcome of one compensating DELETE during teardown. */
+export interface TeardownResult {
+  method: string;
+  path: string;
+  status: number | null;
+  ok: boolean;
+  note?: string;
+}
+
 export interface RunTotals {
   total: number;
   passed: number;
@@ -64,6 +80,8 @@ export interface RunRecord {
   totals: RunTotals;
   warnings: string[];
   tests: TestRecord[];
+  /** Compensating DELETEs performed after a mutation run (§#11 teardown). */
+  teardown?: TeardownResult[];
 }
 
 export function emptyTotals(): RunTotals {

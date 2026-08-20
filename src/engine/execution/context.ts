@@ -20,6 +20,7 @@ import { assertTargetAllowed } from '../http/targetGuard.js';
 import { EngineError } from '../types/errors.js';
 import type { HttpFetcher, LoadedSpec } from '../types/openapi.js';
 import type { HttpFetchImpl } from '../types/http.js';
+import type { CreatedResource } from '../types/run.js';
 import { sendRequest } from '../http/httpClient.js';
 
 export interface PrepareContextInput {
@@ -50,6 +51,8 @@ export interface EngineContext {
   validator: SchemaValidator;
   /** Shared across a run: harvested ids for path/query params (§36). */
   valuePool: ValuePool;
+  /** Resources created via POST during the run, for teardown (§#11). */
+  createdResources: CreatedResource[];
   warnings: string[];
   env: NodeJS.ProcessEnv;
   now: () => number;
@@ -148,6 +151,7 @@ export async function prepareContext(input: PrepareContextInput): Promise<Engine
     }),
     validator: new SchemaValidator(),
     valuePool: new ValuePool(),
+    createdResources: [],
     warnings,
     env,
     now,

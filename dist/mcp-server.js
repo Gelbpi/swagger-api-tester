@@ -2814,8 +2814,8 @@ var require_validate = __commonJS({
           return data;
       }
       let expr = data;
-      const segments = jsonPointer.split("/");
-      for (const segment of segments) {
+      const segments2 = jsonPointer.split("/");
+      for (const segment of segments2) {
         if (segment) {
           data = (0, codegen_1._)`${data}${(0, codegen_1.getProperty)((0, util_1.unescapeJsonPointer)(segment))}`;
           expr = (0, codegen_1._)`${expr} && ${data}`;
@@ -4350,9 +4350,9 @@ var require_core = __commonJS({
         const rules = this.RULES.all;
         metaSchema = JSON.parse(JSON.stringify(metaSchema));
         for (const jsonPointer of keywordsJsonPointers) {
-          const segments = jsonPointer.split("/").slice(1);
+          const segments2 = jsonPointer.split("/").slice(1);
           let keywords = metaSchema;
-          for (const seg of segments)
+          for (const seg of segments2)
             keywords = keywords[seg];
           for (const key in rules) {
             const rule = rules[key];
@@ -83086,12 +83086,17 @@ var settingsSchema = external_exports.object({
   /** Strict (default) fails an unexpected 2xx; false treats it as PASS (§#8). */
   strictStatus: external_exports.boolean().optional(),
   /** Varies deterministic data generation between runs (§#11 seed). */
-  seed: external_exports.union([external_exports.string(), external_exports.number()]).optional()
+  seed: external_exports.union([external_exports.string(), external_exports.number()]).optional(),
+  /**
+   * After a mutation run, delete resources the tester created (compensating
+   * DELETEs, reverse order) so the DB stays clean and runs are repeatable.
+   * Requires mutations enabled; only ever deletes ids we created (§#11 teardown).
+   */
+  teardown: external_exports.boolean().optional()
 }).strict();
-var RESERVED_KEYS = ["teardown", "smartValues"];
+var RESERVED_KEYS = ["smartValues"];
 var configSchema = settingsSchema.extend({
   profiles: external_exports.record(settingsSchema.partial()).optional(),
-  teardown: external_exports.unknown().optional(),
   smartValues: external_exports.unknown().optional()
 }).strict();
 var KNOWN_TOP_LEVEL_KEYS = [
@@ -83264,7 +83269,7 @@ async function loadConfigOptional(projectDir) {
   return { ...loaded, present: true };
 }
 function applyProfile(config2, profileName) {
-  const { profiles, teardown: _teardown, smartValues: _sv, ...base } = config2;
+  const { profiles, smartValues: _sv, ...base } = config2;
   if (!profileName) return base;
   const override = profiles?.[profileName];
   if (!override) {
@@ -84704,6 +84709,7 @@ async function prepareContext(input) {
     }),
     validator: new SchemaValidator(),
     valuePool: new ValuePool(),
+    createdResources: [],
     warnings,
     env,
     now
@@ -85544,6 +85550,22 @@ function endpointRequiresAuth(ctx, endpoint) {
   const effective = opSecurity !== void 0 ? opSecurity : globalSecurity;
   return Array.isArray(effective) && effective.some((req) => req && typeof req === "object" && Object.keys(req).length > 0);
 }
+function extractCreatedId(bodyText, headers) {
+  try {
+    const body = JSON.parse(bodyText);
+    if (body && typeof body === "object" && !Array.isArray(body)) {
+      const id = body.id;
+      if (typeof id === "string" || typeof id === "number") return id;
+    }
+  } catch {
+  }
+  const location2 = headers["location"];
+  if (location2) {
+    const seg = location2.split("?")[0].split("/").filter(Boolean).pop();
+    if (seg) return /^\d+$/.test(seg) ? Number(seg) : seg;
+  }
+  return void 0;
+}
 var defaultSleep = (ms) => new Promise((r) => setTimeout(r, ms));
 function baseRecord(input, testId) {
   const { endpoint } = input;
@@ -85726,6 +85748,12 @@ async function executeOne(input) {
       try {
         ctx.valuePool.harvest(JSON.parse(res.bodyText), endpoint.path);
       } catch {
+      }
+    }
+    if (endpoint.method === "POST" && !neg && res.status >= 200 && res.status < 300) {
+      const createdId = extractCreatedId(res.bodyText, res.headers);
+      if (createdId !== void 0) {
+        ctx.createdResources.push({ collectionPath: endpoint.path, id: createdId });
       }
     }
     const contentType = res.headers["content-type"] ?? "";
@@ -86084,6 +86112,10 @@ function formatRunSummary(s) {
     lines.push("SKIPPED");
     for (const g of s.skipped) lines.push("", formatGroup(g));
   }
+  if (s.teardown) {
+    lines.push("");
+    lines.push(`Teardown: deleted ${s.teardown.deleted}/${s.teardown.attempted} created resource(s)` + (s.teardown.failed ? `, ${s.teardown.failed} failed` : ""));
+  }
   if (s.warnings.length) {
     lines.push("");
     lines.push("Notes:");
@@ -86191,6 +86223,85 @@ function buildPlan(registry2, filters = {}) {
   return [...filtered].sort(
     (a, b) => a.path === b.path ? a.method.localeCompare(b.method) : a.path.localeCompare(b.path)
   );
+}
+
+// src/engine/execution/teardown.ts
+function segments(path) {
+  return path.split("/").filter((s) => s.length > 0);
+}
+function isParamSeg2(seg) {
+  return /^\{.+\}$/.test(seg) || /^:.+/.test(seg);
+}
+function paramName(seg) {
+  return seg.replace(/^[:{]/, "").replace(/\}$/, "");
+}
+function findItemDelete(registry2, collectionPath) {
+  const cs = segments(collectionPath);
+  return registry2.list().find((e) => {
+    if (e.method !== "DELETE") return false;
+    const ds = segments(e.path);
+    return ds.length === cs.length + 1 && cs.every((s, i) => s === ds[i]) && isParamSeg2(ds[ds.length - 1]);
+  });
+}
+async function runTeardown(ctx, created, opts = {}) {
+  const results = [];
+  const profileName = opts.authProfile ?? ctx.settings.defaultAuthProfile;
+  for (const resource of [...created].reverse()) {
+    const deleteEp = findItemDelete(ctx.registry, resource.collectionPath);
+    if (!deleteEp) {
+      results.push({
+        method: "DELETE",
+        path: `${resource.collectionPath}/{id}`,
+        status: null,
+        ok: false,
+        note: "no matching DELETE endpoint \u2014 cannot clean up"
+      });
+      continue;
+    }
+    const param = paramName(segments(deleteEp.path)[segments(deleteEp.path).length - 1]);
+    const build = buildRequest({
+      endpoint: deleteEp,
+      baseUrl: ctx.baseUrl,
+      explicit: { pathParams: { [param]: resource.id } },
+      validator: ctx.validator
+    });
+    if (!build.ok) {
+      results.push({ method: "DELETE", path: deleteEp.path, status: null, ok: false, note: build.explanation });
+      continue;
+    }
+    const request = build.request;
+    try {
+      const material = await ctx.authManager.resolve(profileName);
+      applyAuthMaterial(material, request.headers, request.query);
+      const qs = new URLSearchParams(request.query).toString();
+      request.url = `${ctx.baseUrl.replace(/\/$/, "")}${request.path}${qs ? `?${qs}` : ""}`;
+      assertTargetAllowed(request.url, {
+        ...ctx.settings.allowRemoteTargets !== void 0 ? { allowRemoteTargets: ctx.settings.allowRemoteTargets } : {},
+        env: ctx.env
+      });
+      const res = await sendRequest(
+        {
+          method: "DELETE",
+          url: request.url,
+          headers: request.headers,
+          timeoutMs: ctx.settings.timeoutMs ?? 1e4
+        },
+        opts.httpFetchImpl ? { fetchImpl: opts.httpFetchImpl } : {}
+      );
+      const ok = res.status === 200 || res.status === 202 || res.status === 204 || res.status === 404;
+      results.push({
+        method: "DELETE",
+        path: request.path,
+        status: res.status,
+        ok,
+        ...res.status === 404 ? { note: "already gone (404) \u2014 treated as clean" } : {}
+      });
+    } catch (err) {
+      const note = err instanceof AuthError || err instanceof EngineError || err instanceof HttpClientError ? err.message : String(err);
+      results.push({ method: "DELETE", path: request.path, status: null, ok: false, note });
+    }
+  }
+  return results;
 }
 
 // src/engine/execution/testRunner.ts
@@ -86382,6 +86493,14 @@ async function testAll(input) {
   );
   const totals = emptyTotals();
   for (const r of records) tallyOutcome(totals, r.outcome);
+  const teardownEnabled = (input.teardown ?? ctx.settings.teardown) === true && mutations && !input.dryRun;
+  let teardownResults;
+  if (teardownEnabled && ctx.createdResources.length > 0) {
+    teardownResults = await runTeardown(ctx, ctx.createdResources, {
+      ...input.authProfile ? { authProfile: input.authProfile } : {},
+      ...input.httpFetchImpl ? { httpFetchImpl: input.httpFetchImpl } : {}
+    });
+  }
   const run = {
     runId,
     createdAt,
@@ -86391,7 +86510,8 @@ async function testAll(input) {
     durationMs: now() - started,
     totals,
     warnings: ctx.warnings,
-    tests: records
+    tests: records,
+    ...teardownResults ? { teardown: teardownResults } : {}
   };
   store.saveRun(run);
   const maxFailures = input.maxFailuresReturned ?? DEFAULT_MAX_FAILURES;
@@ -86415,7 +86535,14 @@ async function testAll(input) {
     truncated: failures.dropped > 0,
     droppedFailureGroups: failures.dropped,
     warnings: ctx.warnings,
-    detailsUri: `apitest://runs/${runId}`
+    detailsUri: `apitest://runs/${runId}`,
+    ...teardownResults ? {
+      teardown: {
+        attempted: teardownResults.length,
+        deleted: teardownResults.filter((t) => t.ok).length,
+        failed: teardownResults.filter((t) => !t.ok).length
+      }
+    } : {}
   };
   return { summary, runId };
 }
@@ -86431,6 +86558,7 @@ var inputSchema2 = {
   profile: external_exports.string().optional(),
   mutations: external_exports.boolean().optional().describe("Enable state-changing methods (default off)"),
   negativeTests: external_exports.boolean().optional().describe("Also test documented error responses (e.g. 404/400) by sending deliberately bad input"),
+  teardown: external_exports.boolean().optional().describe("After the run, delete resources the tester created (needs mutations) to keep the DB clean"),
   maxParallelRequests: external_exports.number().int().positive().optional(),
   refreshSpec: external_exports.boolean().optional(),
   dryRun: external_exports.boolean().optional(),
@@ -86455,6 +86583,7 @@ function registerTestAll(server, opts) {
         ...args.profile ? { profile: args.profile } : {},
         ...args.mutations !== void 0 ? { mutations: args.mutations } : {},
         ...args.negativeTests !== void 0 ? { negativeTests: args.negativeTests } : {},
+        ...args.teardown !== void 0 ? { teardown: args.teardown } : {},
         ...args.maxParallelRequests ? { maxParallelRequests: args.maxParallelRequests } : {},
         ...args.refreshSpec ? { refreshSpec: args.refreshSpec } : {},
         ...args.dryRun ? { dryRun: args.dryRun } : {},

@@ -82,10 +82,10 @@ describe('loadConfig (build-prompt §13)', () => {
     });
   });
 
-  it('warns on reserved keys (teardown/smartValues)', async () => {
-    const dir = project('reserved', `{ "baseUrl": "http://localhost:8080", "teardown": {} }`);
+  it('warns on the reserved smartValues key', async () => {
+    const dir = project('reserved', `{ "baseUrl": "http://localhost:8080", "smartValues": {} }`);
     const { warnings } = await loadConfig(dir);
-    expect(warnings.some((w) => w.includes('teardown'))).toBe(true);
+    expect(warnings.some((w) => w.includes('smartValues'))).toBe(true);
   });
 
   it('accepts seed and strictStatus as real settings (§#8/#11)', async () => {

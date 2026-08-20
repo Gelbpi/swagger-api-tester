@@ -16,6 +16,8 @@ import { prepareContext } from './context.js';
 import { buildPlan, type PlanFilters } from './planBuilder.js';
 import { executeOne, type RiskGate } from './executeOne.js';
 import { buildNegativeCases, type NegativeCase } from './negativeCases.js';
+import { runTeardown } from './teardown.js';
+import type { TeardownResult } from '../types/run.js';
 import { runPool } from './testRunner.js';
 import { RunStore } from '../results/runStore.js';
 import { makeRunId } from '../results/ids.js';
@@ -37,6 +39,8 @@ export interface TestAllInput extends PlanFilters {
   maxFailuresReturned?: number;
   /** Also test documented error responses (400/404/...) with deliberate bad input (#7). */
   negativeTests?: boolean;
+  /** After the run, delete resources the tester created (needs mutations) (#11). */
+  teardown?: boolean;
   // Injection / environment
   pluginProjectPath?: string;
   env?: NodeJS.ProcessEnv;
@@ -225,6 +229,17 @@ export async function testAll(input: TestAllInput): Promise<TestAllResult> {
   const totals = emptyTotals();
   for (const r of records) tallyOutcome(totals, r.outcome);
 
+  // Teardown: remove resources we created, if enabled (needs mutations, not dryRun).
+  const teardownEnabled =
+    (input.teardown ?? ctx.settings.teardown) === true && mutations && !input.dryRun;
+  let teardownResults: TeardownResult[] | undefined;
+  if (teardownEnabled && ctx.createdResources.length > 0) {
+    teardownResults = await runTeardown(ctx, ctx.createdResources, {
+      ...(input.authProfile ? { authProfile: input.authProfile } : {}),
+      ...(input.httpFetchImpl ? { httpFetchImpl: input.httpFetchImpl } : {}),
+    });
+  }
+
   const run: RunRecord = {
     runId,
     createdAt,
@@ -235,6 +250,7 @@ export async function testAll(input: TestAllInput): Promise<TestAllResult> {
     totals,
     warnings: ctx.warnings,
     tests: records,
+    ...(teardownResults ? { teardown: teardownResults } : {}),
   };
   store.saveRun(run);
 
@@ -261,6 +277,15 @@ export async function testAll(input: TestAllInput): Promise<TestAllResult> {
     droppedFailureGroups: failures.dropped,
     warnings: ctx.warnings,
     detailsUri: `apitest://runs/${runId}`,
+    ...(teardownResults
+      ? {
+          teardown: {
+            attempted: teardownResults.length,
+            deleted: teardownResults.filter((t) => t.ok).length,
+            failed: teardownResults.filter((t) => !t.ok).length,
+          },
+        }
+      : {}),
   };
   return { summary, runId };
 }
