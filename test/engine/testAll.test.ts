@@ -16,8 +16,9 @@ const spec = {
   info: { title: 'T', version: '1.0.0' },
   paths: {
     '/a': { get: { operationId: 'a', responses: okBody } },
-    '/b': { get: { operationId: 'b', responses: okBody } },
-    '/c': { get: { operationId: 'c', responses: okBody } },
+    // /b and /c require auth (no profile configured) -> 401 -> AUTH_UNAVAILABLE.
+    '/b': { get: { operationId: 'b', security: [{ bearerAuth: [] }], responses: okBody } },
+    '/c': { get: { operationId: 'c', security: [{ bearerAuth: [] }], responses: okBody } },
     '/fail': { get: { operationId: 'fail', responses: okBody } },
     '/fail2': {
       get: {
@@ -28,7 +29,19 @@ const spec = {
       },
     },
     '/w': { post: { operationId: 'w', responses: { '201': { description: 'created' } } } },
+    // A read endpoint that DOCUMENTS 401 and returns it -> must be INCONCLUSIVE
+    // (business rule), NOT silently skipped (regression guard for bug #1).
+    '/profile': {
+      get: {
+        operationId: 'profile',
+        responses: {
+          '200': { description: 'ok' },
+          '401': { description: 'unauthorized', content: { 'application/json': { schema: { type: 'object', properties: { error: { type: 'string' } } } } } },
+        },
+      },
+    },
   },
+  components: { securitySchemes: { bearerAuth: { type: 'http', scheme: 'bearer' } } },
 };
 
 let projectDir: string;
@@ -51,6 +64,7 @@ const routes = {
   [`GET ${BASE}/fail`]: { status: 500, body: 'boom' },
   [`GET ${BASE}/fail2`]: jsonRoute({ id: 'not-int' }),
   [`POST ${BASE}/w`]: jsonRoute({}, 201),
+  [`GET ${BASE}/profile`]: jsonRoute({ error: 'unauthorized' }, 401),
 };
 
 beforeAll(() => {
@@ -70,8 +84,10 @@ describe('testAll orchestrator (build-prompt §9, §40)', () => {
     const { fetchImpl } = makeHttpFetchImpl(routes);
     const { summary, runId } = await testAll({ ...base(), httpFetchImpl: fetchImpl });
 
-    expect(summary.totals).toMatchObject({ total: 6, passed: 1, failed: 2, skipped: 3 });
+    expect(summary.totals).toMatchObject({ total: 7, passed: 1, failed: 2, skipped: 3, inconclusive: 1 });
     expect(summary.mutations).toBe(false);
+    // A documented 401 on a read endpoint is business-rule INCONCLUSIVE, not skipped.
+    expect(summary.inconclusive.some((g) => g.reason === 'BUSINESS_RULE_REJECTED')).toBe(true);
 
     // Identical 401s collapse into a single AUTH_UNAVAILABLE group with count 2.
     const auth = summary.skipped.find((g) => g.reason === 'AUTH_UNAVAILABLE');
@@ -84,7 +100,7 @@ describe('testAll orchestrator (build-prompt §9, §40)', () => {
 
     // Full run persisted and retrievable.
     const run = new RunStore(dataDir).getRun(runId);
-    expect(run?.tests).toHaveLength(6);
+    expect(run?.tests).toHaveLength(7);
   });
 
   it('executes writes when mutations are enabled', async () => {

@@ -11,6 +11,7 @@ const base: ClassifyInput = {
   schemaChecked: true,
   schemaValid: true,
   hasCredentials: false,
+  endpointRequiresAuth: false,
   validationErrors: [],
 };
 
@@ -25,11 +26,22 @@ describe('classifyResponse (build-prompt §33)', () => {
     expect(cls({ actualStatus: 500 })).toMatchObject({ outcome: 'FAIL', reason: 'SERVER_ERROR' });
   });
 
-  it('401 without creds -> SKIPPED/AUTH_UNAVAILABLE', () => {
-    expect(cls({ actualStatus: 401, hasCredentials: false })).toMatchObject({
-      outcome: 'SKIPPED',
-      reason: 'AUTH_UNAVAILABLE',
-    });
+  it('401 with no creds, undocumented, endpoint requires auth -> SKIPPED/AUTH_UNAVAILABLE', () => {
+    expect(
+      cls({ actualStatus: 401, hasCredentials: false, documentedResponseKey: undefined, endpointRequiresAuth: true }),
+    ).toMatchObject({ outcome: 'SKIPPED', reason: 'AUTH_UNAVAILABLE' });
+  });
+
+  it('401 with no creds but DOCUMENTED -> INCONCLUSIVE/BUSINESS_RULE_REJECTED (login rejecting bad body)', () => {
+    expect(
+      cls({ actualStatus: 401, hasCredentials: false, documentedResponseKey: '401', contentDocumented: false, schemaChecked: false }),
+    ).toMatchObject({ outcome: 'INCONCLUSIVE', reason: 'BUSINESS_RULE_REJECTED' });
+  });
+
+  it('401 with no creds, undocumented, NO auth requirement -> FAIL/UNDOCUMENTED_ERROR_SHAPE', () => {
+    expect(
+      cls({ actualStatus: 401, hasCredentials: false, documentedResponseKey: undefined, endpointRequiresAuth: false }),
+    ).toMatchObject({ outcome: 'FAIL', reason: 'UNDOCUMENTED_ERROR_SHAPE' });
   });
 
   it('403 with creds -> INCONCLUSIVE/AUTH_INSUFFICIENT_SCOPE', () => {

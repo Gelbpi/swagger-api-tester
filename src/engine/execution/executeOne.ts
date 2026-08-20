@@ -27,6 +27,21 @@ import { maskString, sanitizeHeaders, sanitizeValue } from '../results/sanitizer
 
 const BODY_EXCERPT_MAX = 800;
 
+/**
+ * True if the endpoint declares a non-empty security requirement. Operation-level
+ * `security` overrides the document's global `security`; an empty requirement
+ * object (`{}`) means "auth optional" and does not count.
+ */
+function endpointRequiresAuth(ctx: EngineContext, endpoint: Endpoint): boolean {
+  const opSecurity = endpoint.operation.security;
+  const globalSecurity = (ctx.spec.document as { security?: unknown }).security;
+  const effective = opSecurity !== undefined ? opSecurity : globalSecurity;
+  return (
+    Array.isArray(effective) &&
+    effective.some((req) => req && typeof req === 'object' && Object.keys(req).length > 0)
+  );
+}
+
 /** Which risk classes may actually execute. */
 export interface RiskGate {
   allowMutating: boolean;
@@ -266,6 +281,7 @@ export async function executeOne(input: ExecuteOneInput): Promise<TestRecord> {
       schemaChecked: evaluation.schemaChecked,
       schemaValid: evaluation.schemaValid,
       hasCredentials,
+      endpointRequiresAuth: endpointRequiresAuth(ctx, endpoint),
       validationErrors: evaluation.validationErrors,
     });
 

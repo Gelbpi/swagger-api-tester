@@ -85045,20 +85045,22 @@ function classifyResponse(input) {
     };
   }
   if (actualStatus === 401 || actualStatus === 403) {
-    if (!hasCredentials) {
+    if (hasCredentials) {
       return {
-        outcome: "SKIPPED",
-        reason: "AUTH_UNAVAILABLE",
-        explanation: `${actualStatus} with no credentials applied`,
+        outcome: "INCONCLUSIVE",
+        reason: "AUTH_INSUFFICIENT_SCOPE",
+        explanation: `${actualStatus} despite applied credentials`,
         validationErrors: none
       };
     }
-    return {
-      outcome: "INCONCLUSIVE",
-      reason: "AUTH_INSUFFICIENT_SCOPE",
-      explanation: `${actualStatus} despite applied credentials`,
-      validationErrors: none
-    };
+    if (documentedResponseKey === void 0 && input.endpointRequiresAuth) {
+      return {
+        outcome: "SKIPPED",
+        reason: "AUTH_UNAVAILABLE",
+        explanation: `${actualStatus}: endpoint requires authentication but no credentials are configured`,
+        validationErrors: none
+      };
+    }
   }
   if (actualStatus >= 400) {
     const documentedAndValid = documentedResponseKey !== void 0 && (!schemaChecked || schemaValid);
@@ -85222,6 +85224,12 @@ function rateLimitPolicy(status, retryAfterHeader, nowMs, alreadyRetried, maxBac
 
 // src/engine/execution/executeOne.ts
 var BODY_EXCERPT_MAX = 800;
+function endpointRequiresAuth(ctx, endpoint) {
+  const opSecurity = endpoint.operation.security;
+  const globalSecurity = ctx.spec.document.security;
+  const effective = opSecurity !== void 0 ? opSecurity : globalSecurity;
+  return Array.isArray(effective) && effective.some((req) => req && typeof req === "object" && Object.keys(req).length > 0);
+}
 var defaultSleep = (ms) => new Promise((r) => setTimeout(r, ms));
 function baseRecord(input, testId) {
   const { endpoint } = input;
@@ -85393,6 +85401,7 @@ async function executeOne(input) {
       schemaChecked: evaluation.schemaChecked,
       schemaValid: evaluation.schemaValid,
       hasCredentials,
+      endpointRequiresAuth: endpointRequiresAuth(ctx, endpoint),
       validationErrors: evaluation.validationErrors
     });
     const includeBody = classification.outcome !== "PASS" || input.includeResponseBody === true;

@@ -28,6 +28,8 @@ export interface ClassifyInput {
   schemaValid: boolean;
   /** Whether resolved credentials were applied to the request. */
   hasCredentials: boolean;
+  /** Whether the endpoint declares a (non-empty) security requirement. */
+  endpointRequiresAuth: boolean;
   validationErrors: ValidationErrorDetail[];
 }
 
@@ -67,20 +69,29 @@ export function classifyResponse(input: ClassifyInput): Classification {
 
   // 401 / 403
   if (actualStatus === 401 || actualStatus === 403) {
-    if (!hasCredentials) {
+    if (hasCredentials) {
+      // Credentials WERE applied and still rejected -> scope/permission issue.
       return {
-        outcome: 'SKIPPED',
-        reason: 'AUTH_UNAVAILABLE',
-        explanation: `${actualStatus} with no credentials applied`,
+        outcome: 'INCONCLUSIVE',
+        reason: 'AUTH_INSUFFICIENT_SCOPE',
+        explanation: `${actualStatus} despite applied credentials`,
         validationErrors: none,
       };
     }
-    return {
-      outcome: 'INCONCLUSIVE',
-      reason: 'AUTH_INSUFFICIENT_SCOPE',
-      explanation: `${actualStatus} despite applied credentials`,
-      validationErrors: none,
-    };
+    // No credentials were applied. A 401/403 here is often the endpoint behaving
+    // per its own contract (a login rejecting a bad body, a documented protected
+    // response). Only treat it as an unfair skip when the endpoint genuinely
+    // requires auth AND the status is undocumented — otherwise fall through to
+    // the general 4xx branch (documented -> INCONCLUSIVE, undocumented -> FAIL).
+    if (documentedResponseKey === undefined && input.endpointRequiresAuth) {
+      return {
+        outcome: 'SKIPPED',
+        reason: 'AUTH_UNAVAILABLE',
+        explanation: `${actualStatus}: endpoint requires authentication but no credentials are configured`,
+        validationErrors: none,
+      };
+    }
+    // else: fall through to general 4xx handling below.
   }
 
   // Other 4xx
