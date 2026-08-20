@@ -230,6 +230,7 @@ export async function executeOne(input: ExecuteOneInput): Promise<TestRecord> {
   const sleep = input.sleep ?? defaultSleep;
 
   let alreadyRetried = false;
+  let authRetried = false;
   for (;;) {
     let res;
     try {
@@ -264,6 +265,26 @@ export async function executeOne(input: ExecuteOneInput): Promise<TestRecord> {
     }
     if (policy.action === 'fail_server') {
       return { ...record, outcome: 'FAIL', reason: 'SERVER_ERROR', explanation: `server returned ${res.status}`, actualStatus: res.status, durationMs: res.durationMs };
+    }
+
+    // Refresh-on-401 for dynamic login profiles: the cached token may be stale.
+    // Invalidate it, re-authenticate, re-apply the header, and retry once (§25).
+    if (
+      (res.status === 401 || res.status === 403) &&
+      !authRetried &&
+      profileName &&
+      ctx.authManager.isRefreshable(profileName)
+    ) {
+      authRetried = true;
+      ctx.authManager.invalidate(profileName);
+      try {
+        const fresh = await ctx.authManager.resolve(profileName);
+        Object.assign(httpReq.headers, fresh?.headers ?? {});
+      } catch (err) {
+        if (err instanceof AuthError) return skip(err.reason, err.message);
+        throw err;
+      }
+      continue;
     }
 
     // evaluate + classify

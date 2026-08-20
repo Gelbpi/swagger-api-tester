@@ -119,6 +119,7 @@ export async function testEndpoint(input: TestEndpointInput): Promise<TestEndpoi
       ...(input.dataDir ? { dataDir: input.dataDir } : {}),
       now,
       ...(input.specFetcher ? { specFetcher: input.specFetcher } : {}),
+      ...(input.httpFetchImpl ? { httpFetchImpl: input.httpFetchImpl } : {}),
       refreshSpec: input.refreshSpec ?? false,
       ...(input.profile ? { profile: input.profile } : {}),
     });

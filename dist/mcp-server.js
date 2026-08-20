@@ -83034,11 +83034,26 @@ var cookieProfile = external_exports.object({
   name: external_exports.string().optional(),
   value: external_exports.string()
 });
+var loginProfile = external_exports.object({
+  type: external_exports.literal("login"),
+  /** Login endpoint; absolute, or relative to baseUrl. */
+  loginUrl: external_exports.string(),
+  method: external_exports.enum(["POST", "PUT", "GET"]).optional(),
+  contentType: external_exports.enum(["application/json", "application/x-www-form-urlencoded"]).optional(),
+  /** Credentials body (values may use ${env:}/${keychain:}). */
+  body: external_exports.record(external_exports.unknown()).optional(),
+  /** JSON pointer to the token in the response, e.g. "/token" or "/data/accessToken". */
+  tokenPath: external_exports.string(),
+  /** Header name (default Authorization) and format (default "Bearer {token}"). */
+  headerName: external_exports.string().optional(),
+  headerFormat: external_exports.string().optional()
+});
 var authProfileSchema = external_exports.discriminatedUnion("type", [
   bearerProfile,
   basicProfile,
   apiKeyProfile,
-  cookieProfile
+  cookieProfile,
+  loginProfile
 ]);
 var testValuesSchema = external_exports.object({
   path: external_exports.record(external_exports.unknown()).optional(),
@@ -84135,6 +84150,86 @@ function isExpired(payload, nowMs) {
   return typeof payload.exp === "number" && payload.exp * 1e3 <= nowMs;
 }
 
+// src/engine/http/httpClient.ts
+var import_undici2 = __toESM(require_undici(), 1);
+var DEFAULT_TIMEOUT_MS = 1e4;
+var RETRYABLE_METHODS = /* @__PURE__ */ new Set(["GET", "HEAD", "OPTIONS", "PUT"]);
+var HttpClientError = class extends Error {
+  kind;
+  constructor(kind, message) {
+    super(message);
+    this.name = "HttpClientError";
+    this.kind = kind;
+  }
+};
+var undiciFetch = (url, init) => (0, import_undici2.fetch)(url, {
+  method: init.method,
+  headers: init.headers,
+  ...init.body !== void 0 ? { body: init.body } : {},
+  signal: init.signal
+});
+function codeOf(err) {
+  const e = err;
+  return String(e.code ?? e.cause?.code ?? "");
+}
+function messageOf(err) {
+  const e = err;
+  return `${e.message ?? ""} ${e.cause?.message ?? ""}`.toLowerCase();
+}
+function classifyError(err, aborted2) {
+  if (aborted2) return "timeout";
+  const code = codeOf(err);
+  const msg = messageOf(err);
+  if (code === "ECONNREFUSED") return "connection_refused";
+  if (code === "ENOTFOUND" || code === "EAI_AGAIN") return "dns";
+  if (code.startsWith("ERR_TLS") || code.startsWith("ERR_SSL") || /cert|self-signed|tls|ssl/.test(msg)) {
+    return "tls";
+  }
+  if (code === "ECONNRESET" || code === "EPIPE" || /socket hang up|other side closed|econnreset/.test(msg)) {
+    return "transport";
+  }
+  return "transport";
+}
+function collectHeaders(res) {
+  const out = {};
+  for (const [k, v] of res.headers) out[k.toLowerCase()] = v;
+  return out;
+}
+async function sendRequest(req, opts = {}) {
+  const fetchImpl = opts.fetchImpl ?? undiciFetch;
+  const timeoutMs = req.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const maxAttempts = RETRYABLE_METHODS.has(req.method) ? 2 : 1;
+  let lastError;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const start = performance.now();
+    try {
+      const res = await fetchImpl(req.url, {
+        method: req.method,
+        headers: req.headers,
+        ...req.body !== void 0 ? { body: req.body } : {},
+        signal: controller.signal
+      });
+      const bodyText = await res.text();
+      return {
+        status: res.status,
+        headers: collectHeaders(res),
+        bodyText,
+        durationMs: Math.round(performance.now() - start)
+      };
+    } catch (err) {
+      const kind = classifyError(err, controller.signal.aborted);
+      lastError = new HttpClientError(kind, `${req.method} ${req.url} failed: ${kind}`);
+      if (kind === "transport" && attempt < maxAttempts) continue;
+      throw lastError;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  throw lastError ?? new HttpClientError("transport", "request failed");
+}
+
 // src/engine/auth/authManager.ts
 var AuthError = class extends Error {
   reason;
@@ -84145,13 +84240,48 @@ var AuthError = class extends Error {
   }
 };
 var EMPTY = () => ({ headers: {}, query: [], cookies: [] });
+function getByPointer(root, pointer) {
+  const path = pointer.replace(/^#/, "");
+  if (path === "" || path === "/") return root;
+  const parts = path.split("/").slice(1).map((p) => p.replace(/~1/g, "/").replace(/~0/g, "~"));
+  let cur = root;
+  for (const part of parts) {
+    if (cur && typeof cur === "object" && part in cur) {
+      cur = cur[part];
+    } else {
+      return void 0;
+    }
+  }
+  return cur;
+}
+async function resolveObjectSecrets(value) {
+  if (typeof value === "string") return resolveSecrets(value);
+  if (Array.isArray(value)) return Promise.all(value.map(resolveObjectSecrets));
+  if (value && typeof value === "object") {
+    const out = {};
+    for (const [k, v] of Object.entries(value)) {
+      out[k] = await resolveObjectSecrets(v);
+    }
+    return out;
+  }
+  return value;
+}
 var AuthManager = class {
   constructor(profiles = {}, opts = {}) {
     this.profiles = profiles;
     this.opts = opts;
   }
+  cache = /* @__PURE__ */ new Map();
   now() {
     return this.opts.now ? this.opts.now() : Date.now();
+  }
+  /** True if the profile can be refreshed (re-authenticated) on a 401/403. */
+  isRefreshable(profileName) {
+    return this.profiles[profileName]?.type === "login";
+  }
+  /** Drop any cached credentials for a profile so the next resolve re-authenticates. */
+  invalidate(profileName) {
+    this.cache.delete(profileName);
   }
   /** Resolve auth material for a profile name (null = no auth). */
   async resolve(profileName) {
@@ -84163,7 +84293,71 @@ var AuthManager = class {
         `Auth profile "${profileName}" is not defined in config.auth.profiles.`
       );
     }
+    if (profile.type === "login") {
+      const cached2 = this.cache.get(profileName);
+      if (cached2 && (cached2.exp === void 0 || cached2.exp > this.now())) return cached2.material;
+      const entry = await this.login(profile);
+      this.cache.set(profileName, entry);
+      return entry.material;
+    }
     return this.materialize(profile);
+  }
+  async login(profile) {
+    const contentType = profile.contentType ?? "application/json";
+    const method = profile.method ?? "POST";
+    const url = this.resolveLoginUrl(profile.loginUrl);
+    const bodyObj = await resolveObjectSecrets(profile.body ?? {});
+    const body = method === "GET" ? void 0 : contentType === "application/x-www-form-urlencoded" ? new URLSearchParams(
+      Object.entries(bodyObj).map(([k, v]) => [k, String(v)])
+    ).toString() : JSON.stringify(bodyObj);
+    const send = this.opts.httpSend ?? sendRequest;
+    const req = {
+      method,
+      url,
+      headers: body !== void 0 ? { "Content-Type": contentType } : {},
+      ...body !== void 0 ? { body } : {}
+    };
+    let res;
+    try {
+      res = await send(req);
+    } catch (err) {
+      throw new AuthError("AUTH_UNAVAILABLE", `Login request to ${url} failed: ${String(err)}`);
+    }
+    if (res.status < 200 || res.status >= 300) {
+      throw new AuthError("AUTH_UNAVAILABLE", `Login endpoint ${url} returned HTTP ${res.status}.`);
+    }
+    let parsed;
+    try {
+      parsed = JSON.parse(res.bodyText);
+    } catch {
+      throw new AuthError("AUTH_UNAVAILABLE", `Login response from ${url} was not JSON.`);
+    }
+    const token = getByPointer(parsed, profile.tokenPath);
+    if (typeof token !== "string" || token.length === 0) {
+      throw new AuthError(
+        "AUTH_UNAVAILABLE",
+        `No token found at "${profile.tokenPath}" in the login response.`
+      );
+    }
+    registerSecret(token);
+    const headerName = profile.headerName ?? "Authorization";
+    const headerValue = (profile.headerFormat ?? "Bearer {token}").replace("{token}", token);
+    const material = EMPTY();
+    material.headers[headerName] = headerValue;
+    let exp;
+    if (isJwt(token)) {
+      const payload = decodeJwtPayload(token);
+      if (payload && typeof payload.exp === "number") exp = payload.exp * 1e3;
+    }
+    return exp !== void 0 ? { material, exp } : { material };
+  }
+  resolveLoginUrl(loginUrl) {
+    try {
+      return new URL(loginUrl).toString();
+    } catch {
+      const base = this.opts.baseUrl ?? "http://localhost";
+      return new URL(loginUrl, base.endsWith("/") ? base : base + "/").toString();
+    }
   }
   async materialize(profile) {
     const material = EMPTY();
@@ -84199,6 +84393,8 @@ var AuthManager = class {
         material.cookies.push(profile.name ? `${profile.name}=${value}` : value);
         break;
       }
+      case "login":
+        break;
     }
     return material;
   }
@@ -84428,7 +84624,11 @@ async function prepareContext(input) {
     ...openApiUrl ? { openApiUrl } : {},
     spec,
     registry: new EndpointRegistry(spec.document),
-    authManager: new AuthManager(settings.auth?.profiles ?? {}, { now }),
+    authManager: new AuthManager(settings.auth?.profiles ?? {}, {
+      now,
+      baseUrl,
+      ...input.httpFetchImpl ? { httpSend: (req) => sendRequest(req, { fetchImpl: input.httpFetchImpl }) } : {}
+    }),
     validator: new SchemaValidator(),
     warnings,
     env,
@@ -85112,86 +85312,6 @@ function classifyResponse(input) {
   return { outcome: "PASS", reason: null, explanation: "response matched the contract", validationErrors: none };
 }
 
-// src/engine/http/httpClient.ts
-var import_undici2 = __toESM(require_undici(), 1);
-var DEFAULT_TIMEOUT_MS = 1e4;
-var RETRYABLE_METHODS = /* @__PURE__ */ new Set(["GET", "HEAD", "OPTIONS", "PUT"]);
-var HttpClientError = class extends Error {
-  kind;
-  constructor(kind, message) {
-    super(message);
-    this.name = "HttpClientError";
-    this.kind = kind;
-  }
-};
-var undiciFetch = (url, init) => (0, import_undici2.fetch)(url, {
-  method: init.method,
-  headers: init.headers,
-  ...init.body !== void 0 ? { body: init.body } : {},
-  signal: init.signal
-});
-function codeOf(err) {
-  const e = err;
-  return String(e.code ?? e.cause?.code ?? "");
-}
-function messageOf(err) {
-  const e = err;
-  return `${e.message ?? ""} ${e.cause?.message ?? ""}`.toLowerCase();
-}
-function classifyError(err, aborted2) {
-  if (aborted2) return "timeout";
-  const code = codeOf(err);
-  const msg = messageOf(err);
-  if (code === "ECONNREFUSED") return "connection_refused";
-  if (code === "ENOTFOUND" || code === "EAI_AGAIN") return "dns";
-  if (code.startsWith("ERR_TLS") || code.startsWith("ERR_SSL") || /cert|self-signed|tls|ssl/.test(msg)) {
-    return "tls";
-  }
-  if (code === "ECONNRESET" || code === "EPIPE" || /socket hang up|other side closed|econnreset/.test(msg)) {
-    return "transport";
-  }
-  return "transport";
-}
-function collectHeaders(res) {
-  const out = {};
-  for (const [k, v] of res.headers) out[k.toLowerCase()] = v;
-  return out;
-}
-async function sendRequest(req, opts = {}) {
-  const fetchImpl = opts.fetchImpl ?? undiciFetch;
-  const timeoutMs = req.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const maxAttempts = RETRYABLE_METHODS.has(req.method) ? 2 : 1;
-  let lastError;
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    const start = performance.now();
-    try {
-      const res = await fetchImpl(req.url, {
-        method: req.method,
-        headers: req.headers,
-        ...req.body !== void 0 ? { body: req.body } : {},
-        signal: controller.signal
-      });
-      const bodyText = await res.text();
-      return {
-        status: res.status,
-        headers: collectHeaders(res),
-        bodyText,
-        durationMs: Math.round(performance.now() - start)
-      };
-    } catch (err) {
-      const kind = classifyError(err, controller.signal.aborted);
-      lastError = new HttpClientError(kind, `${req.method} ${req.url} failed: ${kind}`);
-      if (kind === "transport" && attempt < maxAttempts) continue;
-      throw lastError;
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-  throw lastError ?? new HttpClientError("transport", "request failed");
-}
-
 // src/engine/http/retryPolicy.ts
 var DEFAULT_MAX_BACKOFF_MS = 3e4;
 var DEFAULT_429_DELAY_MS = 1e3;
@@ -85360,6 +85480,7 @@ async function executeOne(input) {
   };
   const sleep = input.sleep ?? defaultSleep;
   let alreadyRetried = false;
+  let authRetried = false;
   for (; ; ) {
     let res;
     try {
@@ -85391,6 +85512,18 @@ async function executeOne(input) {
     }
     if (policy.action === "fail_server") {
       return { ...record2, outcome: "FAIL", reason: "SERVER_ERROR", explanation: `server returned ${res.status}`, actualStatus: res.status, durationMs: res.durationMs };
+    }
+    if ((res.status === 401 || res.status === 403) && !authRetried && profileName && ctx.authManager.isRefreshable(profileName)) {
+      authRetried = true;
+      ctx.authManager.invalidate(profileName);
+      try {
+        const fresh = await ctx.authManager.resolve(profileName);
+        Object.assign(httpReq.headers, fresh?.headers ?? {});
+      } catch (err) {
+        if (err instanceof AuthError) return skip(err.reason, err.message);
+        throw err;
+      }
+      continue;
     }
     const contentType = res.headers["content-type"] ?? "";
     const evaluation = evaluateResponse(endpoint, res.status, contentType, res.bodyText, {
@@ -85616,6 +85749,7 @@ async function testEndpoint(input) {
       ...input.dataDir ? { dataDir: input.dataDir } : {},
       now,
       ...input.specFetcher ? { specFetcher: input.specFetcher } : {},
+      ...input.httpFetchImpl ? { httpFetchImpl: input.httpFetchImpl } : {},
       refreshSpec: input.refreshSpec ?? false,
       ...input.profile ? { profile: input.profile } : {}
     });
@@ -85934,6 +86068,7 @@ async function testAll(input) {
       ...input.dataDir ? { dataDir: input.dataDir } : {},
       now,
       ...input.specFetcher ? { specFetcher: input.specFetcher } : {},
+      ...input.httpFetchImpl ? { httpFetchImpl: input.httpFetchImpl } : {},
       refreshSpec: input.refreshSpec ?? false,
       ...input.profile ? { profile: input.profile } : {}
     });

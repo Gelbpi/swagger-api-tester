@@ -8,7 +8,7 @@
  */
 import { z } from 'zod';
 
-export const AUTH_PROFILE_TYPES = ['bearer', 'basic', 'apikey', 'cookie'] as const;
+export const AUTH_PROFILE_TYPES = ['bearer', 'basic', 'apikey', 'cookie', 'login'] as const;
 
 const bearerProfile = z.object({
   type: z.literal('bearer'),
@@ -30,12 +30,32 @@ const cookieProfile = z.object({
   name: z.string().optional(),
   value: z.string(),
 });
+/**
+ * A profile that authenticates dynamically: POST credentials to a login endpoint,
+ * extract the token from the response (via a JSON pointer), cache it, and refresh
+ * on 401 (build-prompt §25 login/bootstrap — a V2 extension of the AuthManager seam).
+ */
+const loginProfile = z.object({
+  type: z.literal('login'),
+  /** Login endpoint; absolute, or relative to baseUrl. */
+  loginUrl: z.string(),
+  method: z.enum(['POST', 'PUT', 'GET']).optional(),
+  contentType: z.enum(['application/json', 'application/x-www-form-urlencoded']).optional(),
+  /** Credentials body (values may use ${env:}/${keychain:}). */
+  body: z.record(z.unknown()).optional(),
+  /** JSON pointer to the token in the response, e.g. "/token" or "/data/accessToken". */
+  tokenPath: z.string(),
+  /** Header name (default Authorization) and format (default "Bearer {token}"). */
+  headerName: z.string().optional(),
+  headerFormat: z.string().optional(),
+});
 
 export const authProfileSchema = z.discriminatedUnion('type', [
   bearerProfile,
   basicProfile,
   apiKeyProfile,
   cookieProfile,
+  loginProfile,
 ]);
 export type AuthProfile = z.infer<typeof authProfileSchema>;
 

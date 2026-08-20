@@ -18,6 +18,8 @@ import { SchemaValidator } from '../validation/schemaValidator.js';
 import { assertTargetAllowed } from '../http/targetGuard.js';
 import { EngineError } from '../types/errors.js';
 import type { HttpFetcher, LoadedSpec } from '../types/openapi.js';
+import type { HttpFetchImpl } from '../types/http.js';
+import { sendRequest } from '../http/httpClient.js';
 
 export interface PrepareContextInput {
   project?: string;
@@ -29,6 +31,8 @@ export interface PrepareContextInput {
   now?: () => number;
   /** Injectable fetcher for spec discovery (tests). */
   specFetcher?: HttpFetcher;
+  /** Injectable transport for auth/login HTTP calls (tests). */
+  httpFetchImpl?: HttpFetchImpl;
   refreshSpec?: boolean;
   profile?: string;
 }
@@ -132,7 +136,13 @@ export async function prepareContext(input: PrepareContextInput): Promise<Engine
     ...(openApiUrl ? { openApiUrl } : {}),
     spec,
     registry: new EndpointRegistry(spec.document),
-    authManager: new AuthManager(settings.auth?.profiles ?? {}, { now }),
+    authManager: new AuthManager(settings.auth?.profiles ?? {}, {
+      now,
+      baseUrl,
+      ...(input.httpFetchImpl
+        ? { httpSend: (req) => sendRequest(req, { fetchImpl: input.httpFetchImpl! }) }
+        : {}),
+    }),
     validator: new SchemaValidator(),
     warnings,
     env,

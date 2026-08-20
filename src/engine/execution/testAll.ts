@@ -127,6 +127,7 @@ export async function testAll(input: TestAllInput): Promise<TestAllResult> {
       ...(input.dataDir ? { dataDir: input.dataDir } : {}),
       now,
       ...(input.specFetcher ? { specFetcher: input.specFetcher } : {}),
+      ...(input.httpFetchImpl ? { httpFetchImpl: input.httpFetchImpl } : {}),
       refreshSpec: input.refreshSpec ?? false,
       ...(input.profile ? { profile: input.profile } : {}),
     });
