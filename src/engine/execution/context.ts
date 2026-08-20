@@ -15,6 +15,7 @@ import { loadOpenApi } from '../openapi/loadOpenApi.js';
 import { EndpointRegistry } from '../openapi/endpointRegistry.js';
 import { AuthManager } from '../auth/authManager.js';
 import { SchemaValidator } from '../validation/schemaValidator.js';
+import { ValuePool } from '../generation/valuePool.js';
 import { assertTargetAllowed } from '../http/targetGuard.js';
 import { EngineError } from '../types/errors.js';
 import type { HttpFetcher, LoadedSpec } from '../types/openapi.js';
@@ -47,6 +48,8 @@ export interface EngineContext {
   registry: EndpointRegistry;
   authManager: AuthManager;
   validator: SchemaValidator;
+  /** Shared across a run: harvested ids for path/query params (§36). */
+  valuePool: ValuePool;
   warnings: string[];
   env: NodeJS.ProcessEnv;
   now: () => number;
@@ -144,6 +147,7 @@ export async function prepareContext(input: PrepareContextInput): Promise<Engine
         : {}),
     }),
     validator: new SchemaValidator(),
+    valuePool: new ValuePool(),
     warnings,
     env,
     now,

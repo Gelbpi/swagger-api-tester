@@ -40976,8 +40976,8 @@ var require_pluralizer = __commonJS({
       this: "these"
     };
     module.exports = class Pluralizer {
-      constructor(singular, plural) {
-        this.singular = singular;
+      constructor(singular2, plural) {
+        this.singular = singular2;
         this.plural = plural;
       }
       pluralize(count) {
@@ -84518,6 +84518,76 @@ var SchemaValidator = class {
   }
 };
 
+// src/engine/generation/valuePool.ts
+var MAX_DEPTH = 5;
+function normalizeKey(key) {
+  return key.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+function isParamSegment(seg) {
+  return /^\{.+\}$/.test(seg) || /^:.+/.test(seg);
+}
+function resourceSegment(path) {
+  const statics = path.split("/").filter((s) => s.length > 0 && !isParamSegment(s));
+  return statics.length ? statics[statics.length - 1] : "";
+}
+function singular(word) {
+  if (/ies$/i.test(word)) return word.slice(0, -3) + "y";
+  if (/s$/i.test(word) && !/ss$/i.test(word)) return word.slice(0, -1);
+  return word;
+}
+function isScalarId(value) {
+  return typeof value === "string" && value.length > 0 || typeof value === "number" && Number.isFinite(value);
+}
+var ValuePool = class {
+  store = /* @__PURE__ */ new Map();
+  /** Store a value under a (normalized) key; keeps insertion order, dedups. */
+  put(key, value) {
+    if (value === void 0 || value === null) return;
+    const k = normalizeKey(key);
+    if (!k) return;
+    const arr = this.store.get(k) ?? [];
+    if (!arr.some((v) => v === value)) {
+      arr.push(value);
+      this.store.set(k, arr);
+    }
+  }
+  /** Most-recently harvested value for a key, or undefined. */
+  get(key) {
+    const arr = this.store.get(normalizeKey(key));
+    return arr && arr.length ? arr[arr.length - 1] : void 0;
+  }
+  has(key) {
+    return this.get(key) !== void 0;
+  }
+  /** Number of distinct keys held (for tests/observability). */
+  size() {
+    return this.store.size;
+  }
+  /** Harvest id-like scalar fields from a response body of the given endpoint. */
+  harvest(body, path) {
+    const resource = resourceSegment(path);
+    this.walk(body, resource, 0);
+  }
+  walk(node, resource, depth) {
+    if (depth > MAX_DEPTH || node === null || typeof node !== "object") return;
+    if (Array.isArray(node)) {
+      for (const item of node) this.walk(item, resource, depth + 1);
+      return;
+    }
+    for (const [name, value] of Object.entries(node)) {
+      if (isScalarId(value)) {
+        this.put(name, value);
+        if (name.toLowerCase() === "id" && resource) {
+          this.put(`${resource}id`, value);
+          this.put(`${singular(resource)}id`, value);
+        }
+      } else if (value && typeof value === "object") {
+        this.walk(value, resource, depth + 1);
+      }
+    }
+  }
+};
+
 // src/engine/http/targetGuard.ts
 var FORBIDDEN_HOST_KEYWORDS = ["prod", "live", "staging"];
 function isLoopbackHost(hostname2) {
@@ -84630,6 +84700,7 @@ async function prepareContext(input) {
       ...input.httpFetchImpl ? { httpSend: (req) => sendRequest(req, { fetchImpl: input.httpFetchImpl }) } : {}
     }),
     validator: new SchemaValidator(),
+    valuePool: new ValuePool(),
     warnings,
     env,
     now
@@ -84891,6 +84962,13 @@ function formatDefault(param) {
   if (param.in === "path") return void 0;
   return "test";
 }
+function pooledValueFits(value, schema) {
+  const type = Array.isArray(schema.type) ? schema.type.find((t) => t !== "null") : schema.type;
+  if (type === "integer" || type === "number") return typeof value === "number";
+  if (type === "string") return typeof value === "string";
+  if (type === "boolean") return typeof value === "boolean";
+  return true;
+}
 function resolveParam(param, opts = {}) {
   const ex = firstExample(param);
   if (ex) return { value: ex.value, source: "SpecExample" };
@@ -84902,6 +84980,10 @@ function resolveParam(param, opts = {}) {
   const loc = param.in;
   const tv = opts.testValues?.[loc]?.[param.name];
   if (tv !== void 0) return { value: tv, source: "ConfigTestValues" };
+  const pooled = opts.pool?.get(param.name);
+  if (pooled !== void 0 && pooledValueFits(pooled, schema)) {
+    return { value: pooled, source: "ValuePool" };
+  }
   const fd = formatDefault(param);
   if (fd !== void 0) return { value: fd, source: "FormatDefault" };
   return void 0;
@@ -85015,7 +85097,10 @@ function buildBody(input, validator) {
 function buildRequest(input) {
   const { endpoint, baseUrl, testValues, explicit, requestOverride } = input;
   const validator = input.validator ?? new SchemaValidator();
-  const resolveOpts = testValues ? { testValues } : {};
+  const resolveOpts = {
+    ...testValues ? { testValues } : {},
+    ...input.pool ? { pool: input.pool } : {}
+  };
   const missing = [];
   const notes = [];
   const paramsByLoc = (loc) => endpoint.parameters.filter((p) => p.in === loc);
@@ -85450,7 +85535,8 @@ async function executeOne(input) {
     ...ctx.settings.testValues ? { testValues: ctx.settings.testValues } : {},
     ...ctx.settings.requestOverrides?.[key] ? { requestOverride: ctx.settings.requestOverrides[key] } : {},
     ...input.explicit ? { explicit: input.explicit } : {},
-    validator: ctx.validator
+    validator: ctx.validator,
+    pool: ctx.valuePool
   });
   if (!build.ok) return skip(build.reason, build.explanation);
   const request = build.request;
@@ -85524,6 +85610,12 @@ async function executeOne(input) {
         throw err;
       }
       continue;
+    }
+    if (res.status >= 200 && res.status < 300 && res.bodyText) {
+      try {
+        ctx.valuePool.harvest(JSON.parse(res.bodyText), endpoint.path);
+      } catch {
+      }
     }
     const contentType = res.headers["content-type"] ?? "";
     const evaluation = evaluateResponse(endpoint, res.status, contentType, res.bodyText, {
@@ -85936,6 +86028,18 @@ function registerTestEndpoint(server, opts) {
 }
 
 // src/engine/execution/planBuilder.ts
+var METHOD_RANK = {
+  GET: 0,
+  HEAD: 1,
+  OPTIONS: 2,
+  POST: 3,
+  PUT: 4,
+  PATCH: 5,
+  DELETE: 6
+};
+function pathParamCount(path) {
+  return (path.match(/\{[^}]+\}/g) ?? []).length;
+}
 function globToRegExp(pattern) {
   const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*");
   return new RegExp(`^${escaped}$`, "i");
@@ -85957,6 +86061,14 @@ function buildPlan(registry2, filters = {}) {
     if (filters.exclude && matchesAny(filters.exclude, ep.method, ep.path)) return false;
     return true;
   });
+  if (filters.order === "producers-first") {
+    return [...filtered].sort((a, b) => {
+      const pc = pathParamCount(a.path) - pathParamCount(b.path);
+      if (pc !== 0) return pc;
+      if (a.path !== b.path) return a.path.localeCompare(b.path);
+      return (METHOD_RANK[a.method] ?? 9) - (METHOD_RANK[b.method] ?? 9);
+    });
+  }
   return [...filtered].sort(
     (a, b) => a.path === b.path ? a.method.localeCompare(b.method) : a.path.localeCompare(b.path)
   );
@@ -86111,7 +86223,10 @@ async function testAll(input) {
     ...input.include ? { include: input.include } : {},
     ...input.exclude ? { exclude: input.exclude } : {},
     ...input.methods ? { methods: input.methods } : {},
-    ...input.tags ? { tags: input.tags } : {}
+    ...input.tags ? { tags: input.tags } : {},
+    // Producers (collections/creates) before consumers so the ValuePool is
+    // populated before {id}-style parameters need it.
+    order: "producers-first"
   };
   const plan = buildPlan(ctx.registry, filters);
   let currentLimit = input.maxParallelRequests ?? ctx.settings.maxParallelRequests ?? DEFAULT_CONCURRENCY;

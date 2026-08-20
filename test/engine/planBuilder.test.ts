@@ -29,4 +29,18 @@ describe('PlanBuilder (build-prompt §34)', () => {
     expect(keys(buildPlan(reg, { include: ['* /users'] }))).toEqual(['GET /users', 'POST /users']);
     expect(keys(buildPlan(reg, { exclude: ['DELETE *'] }))).not.toContain('DELETE /users/{id}');
   });
+
+  it('producers-first: fewer path params first, reads before writes (§34)', () => {
+    const ordered = keys(buildPlan(reg, { order: 'producers-first' }));
+    // 0-param endpoints (/users) come before 1-param (/users/{id}) before 2-param.
+    expect(ordered).toEqual([
+      'GET /users',
+      'POST /users',
+      'GET /users/{id}',
+      'DELETE /users/{id}',
+      'GET /users/{id}/orders',
+    ]);
+    // A collection GET always precedes its own item GET.
+    expect(ordered.indexOf('GET /users')).toBeLessThan(ordered.indexOf('GET /users/{id}'));
+  });
 });

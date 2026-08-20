@@ -14,6 +14,7 @@ import type { OpenAPIV3 } from 'openapi-types';
 import type { Endpoint } from '../types/endpoint.js';
 import type { BuildResult, ExplicitOverrides, PreparedRequest } from '../types/request.js';
 import { SchemaValidator } from '../validation/schemaValidator.js';
+import type { ValuePool } from './valuePool.js';
 import { generateValue } from './dataGenerator.js';
 import {
   EXPLICIT_SOURCES,
@@ -33,6 +34,8 @@ export interface BuildRequestInput {
   requestOverride?: ExplicitOverrides;
   explicit?: ExplicitOverrides;
   validator?: SchemaValidator;
+  /** Harvested-value pool consulted for path/query params (§35/§36). */
+  pool?: ValuePool;
 }
 
 /** Supported request content types, in selection-priority order (§24). */
@@ -166,7 +169,10 @@ function buildBody(input: BuildRequestInput, validator: SchemaValidator): BodyOu
 export function buildRequest(input: BuildRequestInput): BuildResult {
   const { endpoint, baseUrl, testValues, explicit, requestOverride } = input;
   const validator = input.validator ?? new SchemaValidator();
-  const resolveOpts = testValues ? { testValues } : {};
+  const resolveOpts = {
+    ...(testValues ? { testValues } : {}),
+    ...(input.pool ? { pool: input.pool } : {}),
+  };
   const missing: string[] = [];
   const notes: string[] = [];
 

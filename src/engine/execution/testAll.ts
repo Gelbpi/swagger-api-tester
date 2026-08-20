@@ -173,6 +173,9 @@ export async function testAll(input: TestAllInput): Promise<TestAllResult> {
     ...(input.exclude ? { exclude: input.exclude } : {}),
     ...(input.methods ? { methods: input.methods } : {}),
     ...(input.tags ? { tags: input.tags } : {}),
+    // Producers (collections/creates) before consumers so the ValuePool is
+    // populated before {id}-style parameters need it.
+    order: 'producers-first',
   };
   const plan = buildPlan(ctx.registry, filters);
 

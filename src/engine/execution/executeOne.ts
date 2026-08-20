@@ -191,6 +191,7 @@ export async function executeOne(input: ExecuteOneInput): Promise<TestRecord> {
     ...(ctx.settings.requestOverrides?.[key] ? { requestOverride: ctx.settings.requestOverrides[key] } : {}),
     ...(input.explicit ? { explicit: input.explicit } : {}),
     validator: ctx.validator,
+    pool: ctx.valuePool,
   });
   if (!build.ok) return skip(build.reason, build.explanation);
   const request = build.request;
@@ -285,6 +286,16 @@ export async function executeOne(input: ExecuteOneInput): Promise<TestRecord> {
         throw err;
       }
       continue;
+    }
+
+    // Harvest ids from any successful response so later requests can reuse them
+    // for path/query params (§36). Best-effort; ignores non-JSON bodies.
+    if (res.status >= 200 && res.status < 300 && res.bodyText) {
+      try {
+        ctx.valuePool.harvest(JSON.parse(res.bodyText), endpoint.path);
+      } catch {
+        /* non-JSON body — nothing to harvest */
+      }
     }
 
     // evaluate + classify

@@ -12,12 +12,14 @@
  */
 import type { OpenAPIV3 } from 'openapi-types';
 import { FIXED_UUID } from './dataGenerator.js';
+import type { ValuePool } from './valuePool.js';
 
 export type ValueSourceName =
   | 'SpecExample'
   | 'SpecDefault'
   | 'SpecEnum'
   | 'ConfigTestValues'
+  | 'ValuePool'
   | 'FormatDefault';
 
 export interface ResolvedParam {
@@ -74,6 +76,17 @@ function formatDefault(param: OpenAPIV3.ParameterObject): unknown {
 
 export interface ParamResolveOptions {
   testValues?: TestValuesByLocation;
+  /** Values harvested from earlier responses (§36); consulted before FormatDefault. */
+  pool?: ValuePool;
+}
+
+/** True if a pooled value is compatible with the parameter's declared type. */
+function pooledValueFits(value: unknown, schema: Record<string, unknown>): boolean {
+  const type = Array.isArray(schema.type) ? schema.type.find((t) => t !== 'null') : schema.type;
+  if (type === 'integer' || type === 'number') return typeof value === 'number';
+  if (type === 'string') return typeof value === 'string';
+  if (type === 'boolean') return typeof value === 'boolean';
+  return true; // unspecified type -> accept
 }
 
 /** Resolve a parameter value using the ordered value-source chain. */
@@ -96,7 +109,15 @@ export function resolveParam(
   const loc = param.in as keyof TestValuesByLocation;
   const tv = opts.testValues?.[loc]?.[param.name];
   if (tv !== undefined) return { value: tv, source: 'ConfigTestValues' };
-  // 5. FormatDefault
+  // 5. ValuePool — a real harvested id beats a synthetic default, and closes
+  //    NO_TEST_DATA for free-form ids the format generator can't produce. Only
+  //    use a pooled value whose TYPE matches the parameter (never a stray string
+  //    for an integer id, etc.).
+  const pooled = opts.pool?.get(param.name);
+  if (pooled !== undefined && pooledValueFits(pooled, schema)) {
+    return { value: pooled, source: 'ValuePool' };
+  }
+  // 6. FormatDefault
   const fd = formatDefault(param);
   if (fd !== undefined) return { value: fd, source: 'FormatDefault' };
 

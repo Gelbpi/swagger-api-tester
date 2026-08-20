@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { OpenAPIV3 } from 'openapi-types';
 import { resolveParam } from '../../src/engine/generation/paramResolver.js';
 import { FIXED_UUID } from '../../src/engine/generation/dataGenerator.js';
+import { ValuePool } from '../../src/engine/generation/valuePool.js';
 
 const p = (over: Partial<OpenAPIV3.ParameterObject>): OpenAPIV3.ParameterObject => ({
   name: 'x',
@@ -48,6 +49,25 @@ describe('ParamResolver value-source chain (build-prompt §35, §22, §23)', () 
   it('defaults a free-form query string (query is lower risk than path)', () => {
     expect(resolveParam(p({ name: 'q', in: 'query', schema: { type: 'string' } }))).toMatchObject({
       source: 'FormatDefault',
+    });
+  });
+
+  it('ValuePool fills a free-form path id that FormatDefault cannot (§35)', () => {
+    const pool = new ValuePool();
+    // Without the pool, a free-form path string is unresolvable (NO_TEST_DATA).
+    const param = p({ name: 'key', in: 'path', schema: { type: 'string' } });
+    expect(resolveParam(param)).toBeUndefined();
+    // After harvesting a real value, the pool provides it.
+    pool.harvest([{ key: 'real-key-42' }], '/items');
+    expect(resolveParam(param, { pool })).toEqual({ value: 'real-key-42', source: 'ValuePool' });
+  });
+
+  it('ValuePool beats the synthetic FormatDefault for an integer id', () => {
+    const pool = new ValuePool();
+    pool.harvest([{ id: 77 }], '/users');
+    expect(resolveParam(p({ name: 'id', in: 'path', schema: { type: 'integer' } }), { pool })).toEqual({
+      value: 77,
+      source: 'ValuePool',
     });
   });
 });
