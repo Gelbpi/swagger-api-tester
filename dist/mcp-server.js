@@ -86641,7 +86641,7 @@ function registerRunResources(server, opts) {
 
 // src/mcp/server.ts
 var SERVER_NAME = "swagger-api-tester";
-var SERVER_VERSION = "0.1.0";
+var SERVER_VERSION = "0.2.0";
 function createServer(opts = {}) {
   const server = new McpServer(
     { name: SERVER_NAME, version: SERVER_VERSION },

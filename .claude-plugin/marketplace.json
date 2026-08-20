@@ -1,6 +1,6 @@
 {
   "name": "swagger-api-tester-marketplace",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Marketplace for the Swagger API Tester plugin (self-referential: the plugin is this repo).",
   "owner": {
     "name": "Swagger API Tester Contributors"
@@ -11,7 +11,7 @@
       "source": "./",
       "displayName": "Swagger API Tester",
       "description": "Deterministic OpenAPI/Swagger contract testing from Claude Desktop.",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "license": "MIT",
       "category": "Testing",
       "keywords": ["openapi", "swagger", "api-testing", "mcp"]

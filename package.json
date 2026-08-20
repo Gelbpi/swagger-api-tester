@@ -1,7 +1,7 @@
 {
   "name": "swagger-api-tester",
   "displayName": "Swagger API Tester",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Deterministic OpenAPI/Swagger contract testing engine exposed to Claude Desktop as an MCP plugin.",
   "type": "module",
   "engines": {

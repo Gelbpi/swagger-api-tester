@@ -1,7 +1,7 @@
 {
   "name": "swagger-api-tester",
   "displayName": "Swagger API Tester",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Deterministically test a local REST API from its OpenAPI/Swagger spec, right inside Claude Desktop. Ask Claude to \"test POST /api/users\" or \"test all endpoints\" — the engine generates valid requests, sends them, and validates responses against the documented contract.",
   "author": {
     "name": "Swagger API Tester Contributors"
