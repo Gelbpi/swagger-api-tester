@@ -142,4 +142,24 @@ describe('loadOpenApi (build-prompt §16)', () => {
       },
     );
   });
+
+  it('names the openApiUrl host that actually failed, not baseUrl', async () => {
+    // baseUrl is fine, but the configured spec lives on a different (dead) host.
+    const refusing = async () => {
+      throw Object.assign(new Error('fetch failed'), { cause: { code: 'ECONNREFUSED' } });
+    };
+    let captured: { message: string; hint?: string } | undefined;
+    await loadOpenApi({
+      baseUrl: BASE,
+      openApiUrl: 'http://specs.internal:9999/openapi.json',
+      fetcher: refusing,
+      cache: freshCache(),
+      now,
+    }).catch((e: { message: string; hint?: string }) => {
+      captured = e;
+    });
+    const text = `${captured?.message} ${captured?.hint ?? ''}`;
+    expect(text).toContain('specs.internal:9999');
+    expect(text).not.toContain('localhost:8080');
+  });
 });

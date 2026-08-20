@@ -83899,7 +83899,7 @@ async function loadOpenApi(opts) {
   };
   const candidates = candidateSpecUrls(opts.baseUrl, opts.openApiUrl);
   const tried = [];
-  let connectionRefused = false;
+  let refusedUrl;
   for (const url of candidates) {
     tried.push(url);
     let text;
@@ -83910,7 +83910,7 @@ async function loadOpenApi(opts) {
       sha = fetched.sha256;
     } catch (err) {
       if (/ECONNREFUSED|fetch failed|connect|ENOTFOUND|EAI_AGAIN/i.test(String(err))) {
-        connectionRefused = true;
+        refusedUrl ??= url;
       }
       continue;
     }
@@ -83926,11 +83926,16 @@ async function loadOpenApi(opts) {
       return { document: doc, version: version2, sourceUrls: [url], sha256: sha };
     }
   }
-  if (connectionRefused) {
+  if (refusedUrl) {
+    let origin = refusedUrl;
+    try {
+      origin = new URL(refusedUrl).origin;
+    } catch {
+    }
     throw new EngineError(
       "SPEC_UNREACHABLE",
-      `The API at ${opts.baseUrl} doesn't appear to be running.`,
-      `Start the server, then try again. (Tried ${tried.length} spec locations at ${opts.baseUrl}.)`
+      `Could not connect to ${origin} \u2014 it doesn't appear to be running.`,
+      `Start the server at ${origin}, then try again. (Failed to reach ${refusedUrl}.)`
     );
   }
   throw new EngineError(

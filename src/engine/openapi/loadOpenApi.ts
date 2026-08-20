@@ -128,7 +128,7 @@ export async function loadOpenApi(opts: LoadOpenApiOptions): Promise<LoadedSpec>
 
   const candidates = candidateSpecUrls(opts.baseUrl, opts.openApiUrl);
   const tried: string[] = [];
-  let connectionRefused = false;
+  let refusedUrl: string | undefined;
 
   for (const url of candidates) {
     tried.push(url);
@@ -140,8 +140,10 @@ export async function loadOpenApi(opts: LoadOpenApiOptions): Promise<LoadedSpec>
       sha = fetched.sha256;
     } catch (err) {
       // Detect "server isn't running" so we can give an actionable hint later.
+      // Remember the URL that actually failed — it may differ from baseUrl when a
+      // separate openApiUrl (possibly another host/port) is configured.
       if (/ECONNREFUSED|fetch failed|connect|ENOTFOUND|EAI_AGAIN/i.test(String(err))) {
-        connectionRefused = true;
+        refusedUrl ??= url;
       }
       continue; // unreachable candidate — try next
     }
@@ -161,11 +163,18 @@ export async function loadOpenApi(opts: LoadOpenApiOptions): Promise<LoadedSpec>
     // parsed but not a spec — keep probing
   }
 
-  if (connectionRefused) {
+  if (refusedUrl) {
+    // Name the origin that actually refused the connection, not baseUrl.
+    let origin = refusedUrl;
+    try {
+      origin = new URL(refusedUrl).origin;
+    } catch {
+      /* keep the raw URL */
+    }
     throw new EngineError(
       'SPEC_UNREACHABLE',
-      `The API at ${opts.baseUrl} doesn't appear to be running.`,
-      `Start the server, then try again. (Tried ${tried.length} spec locations at ${opts.baseUrl}.)`,
+      `Could not connect to ${origin} — it doesn't appear to be running.`,
+      `Start the server at ${origin}, then try again. (Failed to reach ${refusedUrl}.)`,
     );
   }
   throw new EngineError(
